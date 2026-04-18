@@ -1,0 +1,986 @@
+---
+title: "Multi-Objective Optimization Framework for Building Footprint Recognition"
+author: "Your Name"
+date: "2026-04-15"
+documentclass: article
+fontsize: 11pt
+geometry: margin=1in
+linkcolor: blue
+citecolor: blue
+urlcolor: blue
+linestretch: 1.2
+code-fold: false
+code-summary: "Show/Hide Code"
+engine: jupyter
+execute:
+  echo: true
+  warning: false
+format:
+  pdf:
+    latex_engine: xelatex
+    colorlinks: true
+    citecolor: blue
+    urlcolor: blue
+    linkcolor: blue
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    highlight: tango
+    fontsize: 11pt
+    geometry: margin=1in
+    documentclass: article
+    includes:
+      in_header: |
+        \usepackage{graphicx}
+        \usepackage{booktabs}
+        \usepackage{longtable}
+        \usepackage{array}
+        \usepackage{float}
+        \usepackage{amsmath}
+        \usepackage{amssymb}
+        \usepackage{siunitx}
+        \sisetup{detect-all}
+---
+
+```{python setup}
+import os
+import sys
+
+# Add project root to path
+try:
+    ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
+except NameError:
+    ROOT_DIR = os.getcwd()
+
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+
+# Set plotting style
+sns.set_style("whitegrid")
+plt.rcParams['figure.dpi'] = 150
+plt.rcParams['savefig.dpi'] = 300
+plt.rcParams['font.size'] = 10
+```
+
+# Abstract
+
+Building footprint extraction from satellite imagery is a critical task for urban planning, disaster response, and geographic information systems. Traditional approaches optimize a single metric, such as Intersection over Union (IoU), often at the expense of model efficiency or deployment feasibility. This tutorial introduces an extensible multi-objective optimization framework that simultaneously optimizes segmentation accuracy, boundary quality, model complexity (parameter count, FLOPs), and inference time. Using semantic segmentation architectures implemented in Keras with the `segmentation-models` library, we explore the Pareto-optimal trade-offs between competing objectives. The framework supports grid search and NSGA-II optimization, provides comprehensive metrics, generates publication-ready tables and figures, and includes a plugin system for custom objectives and models. We demonstrate the workflow with a short running example and provide templates for extending the framework to novel research questions.
+
+# 1. Introduction
+
+## 1.1 Problem Formulation
+
+Given satellite or aerial RGB imagery, **semantic segmentation** aims to classify each pixel as belonging to a building or not. The output is a binary mask where:
+
+- **Foreground** (`1`): Building pixels
+- **Background** (`0`): Non-building pixels
+
+For a tile image $\mathbf{x} \in [0,1]^{H \times W \times 3}$, a segmentation model $f_\theta$ predicts:
+
+$$
+\hat{\mathbf{y}} = f_\theta(\mathbf{x}) \in [0,1]^{H \times W}
+$$
+
+where $\hat{\mathbf{y}}$ is the probability map and a threshold (typically 0.5) converts it to a binary prediction.
+
+## 1.2 Why Multi-Objective Optimization?
+
+A single-objective approach (e.g., maximizing IoU) ignores practical constraints:
+
+- **Accuracy** alone may yield large, slow models unsuitable for real-time or edge deployment.
+- **Speed** alone may produce inaccurate maps with fragmented buildings.
+- **Compactness** alone may miss small buildings or boundary details.
+
+Multi-objective optimization finds **Pareto-optimal** solutions where no objective can be improved without sacrificing another. This provides a principled way to choose models based on application-specific priorities.
+
+## 1.3 Objectives
+
+The framework optimizes the following objectives:
+
+| Objective | Direction | Description |
+|-----------|-----------|-------------|
+| **IoU** | Maximize | Intersection over Union (Jaccard index) |
+| **F1/Dice** | Maximize | Harmonic mean of precision and recall |
+| **Precision** | Maximize | True positive rate among predicted positives |
+| **Recall** | Maximize | True positive rate among actual positives |
+| **Boundary IoU** | Maximize | Overlap on building edges |
+| **Boundary F1** | Maximize | Harmonic mean on boundaries |
+| **Parameter Count** | Minimize | Model size (number of trainable weights) |
+| **FLOPs** | Minimize | Computational cost (floating-point operations) |
+| **Inference Time** | Minimize | Latency per tile (milliseconds) |
+
+Additional objectives can be defined via the plugin system (see Section 6).
+
+# 2. Framework Overview
+
+## 2.1 Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     MAIN ORCHESTRATOR                            │
+│                     (main.py)                                    │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+        ┌─────────────────┼─────────────────┐
+        ▼                 ▼                 ▼
+┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+│  Config     │   │  Plugin     │   │  Output     │
+│  Manager    │   │  Loader     │   │  Manager    │
+│             │   │             │   │             │
+└──────┬──────┘   └─────────────┘   └──────┬──────┘
+       │                                   │
+       ▼                                   ▼
+┌─────────────────────────────────────────────────────────┐
+│                   OPTIMIZATION ENGINE                     │
+│         (src/optimize.py: NSGA-II / Grid Search)         │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+        ┌─────────────────┼─────────────────┐
+        ▼                 ▼                 ▼
+┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+│   Model     │   │   Data      │   │  Training   │
+│   Factory   │   │   Dataset   │   │  Trainer    │
+│             │   │             │   │             │
+└──────┬──────┘   └──────┬──────┘   └──────┬──────┘
+       │                 │                 │
+       └─────────────────┴─────────────────┘
+                          │
+                          ▼
+              ┌─────────────────────┐
+              │   EVALUATION        │
+              │   (src/evaluate.py) │
+              └─────────────────────┘
+```
+
+## 2.2 Key Components
+
+### Configuration Layer
+
+The YAML-based configuration system defines:
+
+- Experiment metadata (name, seeds, description)
+- Dataset paths and split ratios
+- Model architectures and encoders to explore
+- Training hyperparameters (losses, optimizers, learning rates, batch sizes, epochs)
+- Multi-objective settings (objectives, optimization method, population size)
+- Output settings (base directory, DPI, figure format)
+
+### Model Factory
+
+The `models/model_factory.py` provides a unified interface for building segmentation models:
+
+```python
+from models import build_model
+
+model = build_model(
+    architecture='Unet',
+    encoder='resnet34',
+    encoder_weights='imagenet',
+    input_shape=(256, 256, 3),
+    num_classes=1
+)
+```
+
+Supported architectures:
+
+- `Unet`, `UnetPlusPlus`, `FPN`, `Linknet`, `PSPNet`, `DeepLabV3+`, `PAN`
+- Custom: `NestedUnet`, `AttUNet`, `R2AttUNet`, `ResUnet`, `ResUnetPlusPlus`, `SEUnet`, `scSEUnet`, `UNet3+`
+
+Supported encoders: `resnet18/34/50/101/152`, `efficientnetb0-b7`, `vgg16/19`, `densenet121/169/201`, `mobilenet`, `mobilenetv2`, `seresnet*`, etc.
+
+### Training Layer
+
+The `training/trainer.py` handles:
+
+- Model compilation with custom metrics
+- Callbacks (checkpointing, early stopping, learning rate scheduling)
+- Data loading and augmentation
+- Training loop with validation
+- Summary export (metrics, FLOPs, parameter counts, training time)
+
+### Optimization Layer
+
+The `src/optimize.py` module supports:
+
+- **Grid Search**: Exhaustive evaluation of all configurations
+- **NSGA-II**: Evolutionary multi-objective optimization via `pymoo`
+
+For each configuration, it computes:
+
+1. Segmentation metrics (IoU, F1, precision, recall, boundary metrics)
+2. Complexity metrics (parameters, FLOPs)
+3. Speed metrics (inference time, std, min, max)
+
+### Pareto and Reporting Layer
+
+- `src/pareto.py`: Extracts Pareto-optimal solutions, generates 2D/3D plots, produces text reports
+- `src/evaluate.py`: Generates CSV and LaTeX tables, plots metric distributions
+
+### Plugin System
+
+The plugin system allows registering custom objectives and models without modifying core code:
+
+- `plugins/objectives.py`: Custom objective definitions (e.g., `paper_quality`, `efficiency_score`)
+- `plugins/models.py`: Custom model definitions (e.g., `TinyPaperUNet`)
+- `plugins/loader.py`: Runtime plugin loading from config
+
+# 3. Getting Started
+
+## 3.1 Installation
+
+### Prerequisites
+
+- Python 3.8+
+- CUDA-capable GPU (recommended for training; CPU works for small experiments)
+- Git
+
+### Setup
+
+```bash
+# 1. Clone the repository
+git clone <repository-url>
+cd Multi-objective_Semantic_Segmentation/Codes/01
+
+# 2. Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# or: venv\Scripts\activate  # Windows
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Install segmentation-models (optional but recommended)
+pip install segmentation-models
+```
+
+### Verify Installation
+
+```bash
+# Quick test
+python -c "import tensorflow; print('TensorFlow:', tensorflow.__version__)"
+python -c "import segmentation_models; print('segmentation-models available')"
+python -m pytest tests/test_core.py -v  # If pytest is installed
+```
+
+## 3.2 Data Preparation
+
+The framework expects paired RGB images and binary masks:
+
+```
+datasets/
+├── RGB/
+│   ├── image_001.png
+│   ├── image_002.png
+│   └── ...
+└── Mask/
+    ├── image_001.tif
+    ├── image_002.tif
+    └── ...
+```
+
+**Requirements**:
+
+- RGB and mask files must share the same basename (e.g., `image_001.png` and `image_001.tif`)
+- RGB images: 3-channel, typically 256×256 tiles, RGB format
+- Masks: 1-channel grayscale or TIFF, white (255) = building, black (0) = background
+
+**Dataset Loading**:
+
+The framework automatically pairs files by basename and splits them into train/val/test sets based on `train_val_test_split` in the config (default: 0.7/0.15/0.15).
+
+## 3.3 Configuration Files
+
+### Default Configurations
+
+Three pre-configured YAML files are provided:
+
+1. **`configs/demo_config.yaml`**: Quick test with minimal settings (2 epochs, 1 architecture)
+2. **`configs/experiment_config.yaml`**: Balanced configuration for moderate experiments
+3. **`configs/paper_ready_config.yaml`**: Publication-ready with custom objectives
+
+### Config Structure
+
+```yaml
+experiment:
+  name: "building_footprint_demo"
+  seed: [42]  # List of random seeds for reproducibility
+  description: "Quick demo run"
+
+dataset:
+  name: "Inria Aerial"
+  rgb_path: "datasets/RGB"  # Path to RGB images
+  mask_path: "datasets/Mask"  # Path to mask images
+  tile_size: [256]  # Input tile size
+  augmentations:  # Augmentation strategies
+    - [flip, rotate]
+    - [flip, rotate, brightness]
+  train_val_test_split: [0.7, 0.15, 0.15]
+
+models:
+  architectures: [Unet, UnetPlusPlus]  # Models to evaluate
+  encoders: [resnet34]  # Encoder backbones
+  encoder_weights: [imagenet]  # Pretrained weights or null
+
+training:
+  loss_functions: [binary_crossentropy, dice_loss]
+  optimizers: [Adam]
+  learning_rates: [1e-3]
+  batch_sizes: [4]
+  epochs: [2]
+  schedulers: [ReduceLROnPlateau]
+  early_stopping:
+    enabled: true
+    patience: 3
+
+multi_objective:
+  objectives: [iou, f1_score, param_count, inference_time]
+  optimization_method: "grid_search"  # or "NSGA-II"
+  population_size: 10
+  generations: 3
+  pareto_front: true
+
+extensions:
+  plugin_modules:
+    - plugins.objectives
+    - plugins.models
+
+evaluation:
+  metrics:
+    - iou
+    - f1_score
+    - precision
+    - recall
+  inference_runs: 10
+  warmup_runs: 5
+
+output:
+  base_dir: "outputs"
+  save_format: "png"
+  dpi: 150
+```
+
+# 4. Running Experiments
+
+## 4.1 Quick Start (Smoke Test)
+
+This minimal example validates the framework with a single configuration and 1 epoch. Expected runtime: < 1 minute on CPU.
+
+```bash
+# Option 1: Using smoke test script (fastest)
+python scripts/smoke_test.py --config configs/demo_config.yaml --epochs 1 --tile-size 256
+
+# Option 2: Using main.py with quick mode
+python main.py --config configs/demo_config.yaml --mode quick
+```
+
+**Expected Output**:
+
+```
+Running multi-objective optimization
+Total configurations to evaluate: 1
+Evaluating configuration 1/1: smoke_unet_256_1ep
+Building model: Unet with resnet34
+Dataset validation passed. Sample shapes: RGB=(256, 256, 3), Mask=(256, 256, 1)
+Training ...
+Epoch 1/1
+... 
+Final Val IoU: 0.XXXX
+Training complete. Results saved to outputs/building_footprint_demo_XXXXXX/smoke_unet_256_1ep
+```
+
+**Generated Artifacts**:
+
+```
+outputs/building_footprint_demo_XXXXXX/
+├── tables/
+│   ├── raw_results.json
+│   ├── results.csv
+│   └── results.tex
+├── figures/
+│   ├── pareto_iou_vs_param_count.png
+│   ├── pareto_f1_score_vs_inference_time.png
+│   └── pareto_3d.png
+├── optimization/
+│   └── smoke_unet_256_1ep/
+│       ├── checkpoints/
+│       │   └── epoch_001.h5
+│       ├── tensorboard/
+│       └── summary.json
+└── metadata.json
+```
+
+## 4.2 Full Grid Search
+
+For comprehensive evaluation of multiple architectures and hyperparameters:
+
+```bash
+python main.py --config configs/paper_ready_config.yaml --mode full
+```
+
+**Configuration** (from `paper_ready_config.yaml`):
+
+- **Architectures**: Unet, UnetPlusPlus, TinyPaperUNet
+- **Encoders**: resnet34, resnet50
+- **Losses**: dice_loss, combo_loss
+- **Learning rates**: 1e-3, 5e-4
+- **Batch sizes**: 4, 8
+- **Epochs**: 30
+- **Objectives**: `paper_quality`, `boundary_iou`, `param_count`, `inference_time`
+- **Optimization**: Grid search over all combinations
+
+**Runtime**: ~1-2 hours per configuration on a single GPU (depends on epochs, batch size, dataset size).
+
+## 4.3 NSGA-II Optimization
+
+For large configuration spaces, NSGA-II efficiently explores the Pareto front:
+
+```bash
+python main.py --config configs/experiment_config.yaml --mode full
+```
+
+**NSGA-II Parameters** (from config):
+
+- `optimization_method: "NSGA-II"`
+- `population_size: 50`
+- `generations: 100`
+- `inference_runs: 50`
+- `warmup_runs: 10`
+
+**Advantages**:
+
+- Evaluates far fewer configurations than grid search
+- Explicitly optimizes for Pareto optimality
+- Provides hypervolume indicator for convergence
+
+**Caveat**: The main CLI reporting pipeline (`main.py`) currently expects grid search results as a list of dicts. For NSGA-II to work end-to-end, you may need to run the optimization separately and then manually trigger Pareto extraction and reporting.
+
+## 4.4 Evaluation Mode
+
+Evaluate pre-trained models on a held-out test set:
+
+```bash
+# This functionality is currently a placeholder and needs implementation
+# Placeholder for future development
+```
+
+**Expected Workflow** (once implemented):
+
+1. Train models with `--mode full`
+2. Evaluate on test set with `--mode evaluate --eval-dir outputs/run_XXXX`
+3. Generate test metrics, compare with validation results
+
+# 5. Results and Analysis
+
+## 5.1 Viewing Results
+
+### Raw Results JSON
+
+```bash
+cat outputs/building_footprint_demo_XXXXXX/tables/raw_results.json
+```
+
+Each result contains:
+
+```json
+{
+  "experiment_id": "Unet_resnet34_dice_Loss...",
+  "architecture": "Unet",
+  "encoder": "resnet34",
+  "iou": 0.7234,
+  "f1_score": 0.8123,
+  "precision": 0.7891,
+  "recall": 0.8456,
+  "param_count": 8456123,
+  "flops": 1234567890,
+  "inference_time": 15.43,
+  "paper_quality": 0.XXXX  // Custom objective
+}
+```
+
+### CSV Comparison Table
+
+```bash
+cat outputs/building_footprint_demo_XXXXXX/tables/results.csv
+```
+
+### LaTeX Table for Papers
+
+```bash
+cat outputs/building_footprint_demo_XXXXXX/tables/results.tex
+```
+
+LaTeX output:
+
+```latex
+\begin{table}[htbp]
+\centering
+\caption{Top 10 Model Configurations by IoU}
+\label{tab:top_results}
+\begin{tabular}{llrrrrrr}
+\toprule
+Architecture & Encoder & IoU & F1 & Precision & Recall & Params & Time (ms) \\
+\midrule
+Unet & resnet34 & 0.7234 & 0.8123 & 0.7891 & 0.8456 & 8.46M & 15.43 \\
+UnetPlusPlus & resnet34 & 0.7156 & 0.8045 & 0.7812 & 0.8334 & 9.12M & 18.92 \\
+...
+\end{tabular}
+\end{table}
+```
+
+## 5.2 Pareto Front Analysis
+
+### 2D Pareto Plots
+
+The framework automatically generates Pareto front visualizations:
+
+```
+outputs/XXXXXX/figures/
+├── pareto_iou_vs_param_count.png
+├── pareto_f1_score_vs_inference_time.png
+└── pareto_param_count_vs_inference_time.png
+```
+
+**Interpretation**:
+
+- Each point represents a model configuration
+- The **red curve** is the Pareto front (non-dominated solutions)
+- Points on the front offer the best trade-offs: improving one objective worsens another
+
+### 3D Pareto Plot
+
+For 3 objectives (e.g., IoU, Parameter Count, Inference Time):
+
+```bash
+ls outputs/XXXXXX/figures/pareto_3d.png
+```
+
+### Pareto Report
+
+```
+outputs/XXXXXX/tables/pareto_report.txt
+```
+
+Text report:
+
+```
+================================================================================
+PARETO-OPTIMAL SOLUTIONS REPORT
+================================================================================
+
+Number of Pareto-optimal solutions: 5
+
+--------------------------------------------------------------------------------
+Solution 1: Unet_resnet34_XXXXXX
+--------------------------------------------------------------------------------
+Configuration:
+  architecture: Unet
+  encoder: resnet34
+  loss_function: dice_loss
+  learning_rate: 0.001
+  batch_size: 4
+  epochs: 30
+
+Objectives:
+  iou: 0.7234
+  f1_score: 0.8123
+  param_count: 8.46M
+  inference_time: 15.43 ms
+```
+
+## 5.3 Metrics Summary
+
+### Segmentation Metrics
+
+| Metric | Formula | Range | Interpretation |
+|--------|---------|-------|----------------|
+| **IoU** | $\frac{TP}{TP + FP + FN}$ | [0, 1] | Overlap between prediction and ground truth |
+| **Dice/F1** | $\frac{2 \cdot TP}{2 \cdot TP + FP + FN}$ | [0, 1] | Harmonic mean of precision and recall |
+| **Precision** | $\frac{TP}{TP + FP}$ | [0, 1] | Proportion of predicted buildings that are correct |
+| **Recall** | $\frac{TP}{TP + FN}$ | [0, 1] | Proportion of actual buildings detected |
+| **Boundary IoU** | IoU on edge maps | [0, 1] | Overlap on building boundaries |
+
+### Complexity Metrics
+
+- **Parameter Count**: Total trainable weights (model size)
+- **FLOPs**: Estimated floating-point operations per inference
+- **Inference Time**: Mean latency over 50 runs (ms)
+
+# 6. Extending the Framework
+
+## 6.1 Adding Custom Objectives
+
+To define a new optimization target, register it in `plugins/objectives.py`:
+
+```python
+from src import register_objective
+
+register_objective(
+    name="efficiency_score",
+    direction="max",
+    getter=lambda result: 1.0 / (1.0 + float(result.get("inference_time", 0.0)) / 100.0),
+    description="Normalized efficiency score balancing speed and accuracy.",
+    overwrite=True,
+)
+```
+
+Then activate it in your config:
+
+```yaml
+multi_objective:
+  objectives: [iou, boundary_iou, param_count, efficiency_score]
+  optimization_method: "grid_search"
+```
+
+### Example: Composite Paper Objective
+
+```python
+register_objective(
+    name="paper_quality",
+    direction="max",
+    getter=lambda result: (
+        0.6 * float(result["summary"].get("final_val_iou", 0.0))
+        + 0.3 * float(result["summary"].get("final_val_boundary_iou", 0.0))
+        + 0.1 * float(result.get("efficiency_score", 0.0))
+    ),
+    description="Weighted composite for paper reporting.",
+    overwrite=True,
+)
+```
+
+## 6.2 Adding Custom Models
+
+Register a custom architecture in `plugins/models.py`:
+
+```python
+from tensorflow import keras
+from models import register_model_builder
+
+def build_tiny_paper_unet(**kwargs):
+    """Minimal UNet-like architecture for baseline comparison."""
+    filters = int(kwargs.get("filters", 16))
+    inputs = keras.Input(shape=kwargs["input_shape"])
+    x = keras.layers.Conv2D(filters, 3, padding="same", activation="relu")(inputs)
+    x = keras.layers.Conv2D(filters, 3, padding="same", activation="relu")(x)
+    outputs = keras.layers.Conv2D(kwargs["num_classes"], 1, activation=kwargs.get("activation", "sigmoid"))(x)
+    return keras.Model(inputs, outputs, name="TinyPaperUNet")
+
+register_model_builder(
+    name="TinyPaperUNet",
+    builder=build_tiny_paper_unet,
+    aliases=["tiny_paper_unet"],
+    metadata={"family": "plugin_example"},
+    overwrite=True,
+)
+```
+
+Use in config:
+
+```yaml
+models:
+  architectures: [Unet, TinyPaperUNet]
+  encoders: [resnet34]
+```
+
+## 6.3 Custom Augmentations
+
+Edit `data/augmentation.py` to add new augmentation strategies:
+
+```python
+from albumentations import A, Compose, Normalize, Flip, Rotate, ShiftScaleRotate
+
+CUSTOM_AUGMENTATION_CONFIGS = {
+    "aggressive": Compose([
+        A.RandomBrightnessContrast(p=0.5),
+        A.ShiftScaleRotate(p=0.5),
+        A.ElasticTransform(p=0.3),
+        Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+}
+```
+
+## 6.4 Custom Loss Functions
+
+The `losses/` directory supports multiple loss types:
+
+- `pixel_losses.py`: Binary cross-entropy, dice loss, focal loss
+- `boundary_losses.py`: Boundary IoU, Hausdorff distance
+- `shape_losses.py`: Convexity, compactness
+- `loss_manager.py`: Loss combination and weighting
+
+To add a custom loss, define it in `pixel_losses.py` and reference it in config:
+
+```yaml
+training:
+  loss_functions: [my_custom_loss, dice_loss]
+```
+
+# 7. Reproducibility and Best Practices
+
+## 7.1 Reproducibility
+
+To ensure reproducible experiments:
+
+1. **Fix random seeds** in config:
+   ```yaml
+   experiment:
+     seed: [42, 123, 456]  # Multiple seeds for robustness
+   ```
+
+2. **Record git commit** (automatically saved in `summary.json`):
+   ```json
+   "git_commit": "abc123def456"
+   ```
+
+3. **Save full config** in `metadata.json`:
+   ```json
+   "config": { ... full YAML config ... }
+   ```
+
+4. **Version control** your configs and plugins, not the entire repo.
+
+## 7.2 GPU vs CPU
+
+**GPU Training** (recommended):
+
+```bash
+export CUDA_VISIBLE_DEVICES=0
+python main.py --config configs/demo_config.yaml --mode quick --gpu 0
+```
+
+**CPU Training** (for quick validation):
+
+```bash
+python main.py --config configs/demo_config.yaml --mode quick
+```
+
+## 7.3 Debug Tips
+
+- **Low IoU?** Check dataset paths, verify mask binarization, reduce batch size if OOM.
+- **Training stalls?** Try different learning rates, check for NaNs in logs.
+- **NSGA-II fails?** Ensure `pymoo` is installed; fall back to grid search.
+- **Memory errors?** Reduce `batch_size`, use `auto_batch_size=True`.
+
+# 8. Publication Checklist
+
+Before submitting your paper, ensure you have:
+
+## 8.1 Results
+
+- [ ] Run at least **3 seeds** for each configuration to report mean ± std
+- [ ] Include **Pareto front plots** (2D and 3D) in results section
+- [ ] Provide **LaTeX table** of top-k configurations (use `results.tex`)
+- [ ] Report **all objectives** (accuracy, complexity, speed)
+- [ ] Include **test set metrics** (once `evaluate` mode is implemented)
+
+## 8.2 Figures
+
+- [ ] **Figure 1**: Framework overview diagram (adapt from Section 2.1)
+- [ ] **Figure 2**: Pareto front plots (IoU vs params, IoU vs inference time)
+- [ ] **Figure 3**: Qualitative comparison (predictions vs ground truth masks)
+- [ ] **Figure 4**: Training curves (loss, IoU, F1 over epochs)
+
+## 8.3 Tables
+
+- [ ] **Table 1**: Top 10 configurations by IoU (use `results.tex`)
+- [ ] **Table 2**: Pareto-optimal solutions with all objectives
+- [ ] **Table 3**: Ablation study (e.g., effect of loss functions, augmentations)
+
+## 8.4 Supplementary Material
+
+- [ ] Full Pareto front data (CSV)
+- [ ] Training logs (TensorBoard summaries)
+- [ ] Config files for all experiments
+- [ ] Code repository link (GitHub, GitLab)
+
+# 9. Quick Reference
+
+## 9.1 Command-Line Options
+
+```bash
+python main.py --help
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--config` | Path to experiment config | `configs/experiment_config.yaml` |
+| `--mode` | Mode: `full`, `quick`, `evaluate`, `create-config` | `full` |
+| `--gpu` | GPU device ID | `0` |
+| `--eval-dir` | Evaluation directory (for `--mode evaluate`) | N/A |
+| `--create-config` | Generate default config file | N/A |
+| `--verbose` | Verbosity level: 0, 1, 2 | `1` |
+
+## 9.2 Directory Structure
+
+```
+repo/
+├── configs/               # Experiment YAML configs
+│   ├── demo_config.yaml
+│   ├── experiment_config.yaml
+│   └── paper_ready_config.yaml
+├── data/                  # Data loading and augmentation
+│   ├── dataset.py
+│   └── augmentation.py
+├── datasets/              # Dataset files (RGB + masks)
+│   ├── RGB/
+│   └── Mask/
+├── docs/                  # Documentation
+│   ├── tutorial.md
+│   └── tutorial.qmd
+├── experiments/           # Experiment utilities
+│   └── runner.py
+├── losses/                # Loss functions
+│   ├── pixel_losses.py
+│   ├── boundary_losses.py
+│   ├── shape_losses.py
+│   └── loss_manager.py
+├── models/                # Model architectures
+│   ├── Unet.py
+│   ├── unet_pp.py
+│   ├── model_factory.py
+│   └── ...
+├── notebooks/             # Jupyter notebooks
+│   └── analysis.ipynb
+├── outputs/               # Experiment outputs (auto-generated)
+│   ├── building_footprint_demo_XXXXXX/
+│   │   ├── tables/
+│   │   ├── figures/
+│   │   ├── optimization/
+│   │   └── ...
+├── plugins/               # Plugin modules
+│   ├── objectives.py
+│   ├── models.py
+│   └── loader.py
+├── scripts/               # Utility scripts
+│   └── smoke_test.py
+├── src/                   # Core framework
+│   ├── optimize.py
+│   ├── objectives.py
+│   ├── pareto.py
+│   └── evaluate.py
+├── tests/                 # Unit tests
+│   └── test_core.py
+├── training/              # Training logic
+│   ├── trainer.py
+│   └── metrics.py
+├── utils/                 # Utilities
+│   ├── repro.py
+│   └── system.py
+├── visualization/         # Visualization utilities
+│   └── visualization.py
+├── main.py                # Main entry point
+├── requirements.txt
+├── README.md
+└── docs/tutorial.qmd      # This tutorial
+```
+
+## 9.3 Key Functions
+
+| Function | Module | Purpose |
+|----------|--------|---------|
+| `build_model()` | `models/model_factory` | Build segmentation model |
+| `train_from_config()` | `training/trainer` | Train from config dict |
+| `run_moo_experiment()` | `src/optimize` | Run multi-objective experiment |
+| `extract_pareto_front()` | `src/pareto` | Extract non-dominated solutions |
+| `plot_pareto_front()` | `src/pareto` | Generate Pareto plots |
+| `generate_latex_table()` | `src/evaluate` | Create LaTeX table |
+| `register_objective()` | `src/objectives` | Register custom objective |
+| `register_model_builder()` | `models/model_factory` | Register custom model |
+
+# 10. Conclusion
+
+This tutorial has demonstrated how to use the multi-objective optimization framework for building footprint recognition from satellite imagery. Key takeaways:
+
+- **Extensibility**: Plugin system for custom objectives and models without core code changes
+- **Reproducibility**: YAML configs, seed logging, git commit recording
+- **Publication-ready**: LaTeX tables, Pareto plots, comprehensive metrics
+- **Flexibility**: Grid search for thorough exploration, NSGA-II for efficiency
+
+For paper submissions, we recommend:
+
+1. Run a **smoke test** (`scripts/smoke_test.py`) to validate setup
+2. Conduct a **small grid search** (e.g., 3 architectures × 2 encoders × 2 seeds)
+3. Extract and visualize the **Pareto front**
+4. Generate **LaTeX tables** and **figures** for the manuscript
+5. **Extend** with custom objectives (e.g., domain-specific metrics)
+
+The framework is designed to support rigorous, reproducible research in semantic segmentation for remote sensing applications.
+
+# References
+
+1. Ronneberger, O., Fischer, P., & Brox, T. (2015). U-Net: Convolutional Networks for Biomedical Image Segmentation. *MICCAI*.
+2. Chen, L. C., Zhu, Y., Papandreou, G., Schroff, F., & Adam, H. (2018). Encoder-Decoder with Atrous Separable Convolution for Semantic Image Segmentation. *ECCV*.
+3. Deb, K., Pratap, A., Agarwal, S., & Meyarivan, T. (2002). A fast and elitist multiobjective genetic algorithm: NSGA-II. *IEEE Transactions on Evolutionary Computation*.
+4. Cortes, C., & Vapnik, V. (1995). Support-vector networks. *Machine Learning*.
+5. Segmentation Models. (2023). `segmentation-models` library. https://github.com/qubvel/segmentation_models
+
+# Appendix A: Example Output Files
+
+## A.1 summary.json
+
+```json
+{
+  "experiment_id": "Unet_resnet34_abc123",
+  "architecture": "Unet",
+  "encoder": "resnet34",
+  "epochs_trained": 30,
+  "train_time_seconds": 1234.56,
+  "final_val_iou": 0.7234,
+  "final_val_dice": 0.8123,
+  "param_count": 8456123,
+  "flops": 1234567890,
+  "git_commit": "abc123def456"
+}
+```
+
+## A.2 results.csv (excerpt)
+
+```
+experiment_id,architecture,encoder,iou,f1_score,param_count,flops,inference_time
+Unet_resnet34_abc123,Unet,resnet34,0.7234,0.8123,8456123,1234567890,15.43
+UnetPlusPlus_resnet34_def456,UnetPlusPlus,resnet34,0.7156,0.8045,9123456,1345678901,18.92
+...
+```
+
+## A.3 Pareto Report (excerpt)
+
+```
+================================================================================
+PARETO-OPTIMAL SOLUTIONS REPORT
+================================================================================
+
+Number of Pareto-optimal solutions: 5
+
+--------------------------------------------------------------------------------
+Solution 1: Unet_resnet34_abc123
+--------------------------------------------------------------------------------
+Configuration:
+  architecture: Unet
+  encoder: resnet34
+  loss_function: dice_loss
+  learning_rate: 0.001
+  batch_size: 4
+  epochs: 30
+
+Objectives:
+  iou: 0.7234
+  f1_score: 0.8123
+  param_count: 8.46M
+  inference_time: 15.43 ms
+...
+```
+
+---
+
+*This tutorial was generated on 2026-04-15.*
+
+---
+
+**End of Tutorial**
+
+For questions, issues, or contributions, please open a GitHub issue or contact the authors.
+

@@ -1,0 +1,61 @@
+# Demo Configuration for Quick Testing
+# Building Footprint Multi-Objective Optimization
+
+experiment:
+  name: "building_footprint_demo"
+  seed: [42]
+  description: "Quick demo run for testing framework"
+
+dataset:
+  name: "Inria Aerial"
+  rgb_path: "Datasets/RGB"
+  mask_path: "Datasets/Mask"
+  tile_size: [256]
+  augmentations:
+    - [flip, rotate]
+  train_val_test_split: [0.7, 0.15, 0.15]
+
+models:
+  architectures: [Unet, UnetPlusPlus]
+  encoders: [resnet34]
+  encoder_weights: [imagenet]
+
+training:
+  loss_functions: [binary_crossentropy, dice_loss]
+  optimizers: [Adam]
+  learning_rates: [1e-3]
+  batch_sizes: [4]
+  epochs: [2]  # Just 2 epochs for demo
+  schedulers: [ReduceLROnPlateau]
+  early_stopping:
+    enabled: true
+    patience: 3
+    min_delta: 0.001
+
+multi_objective:
+  objectives: [paper_quality, boundary_iou, param_count, inference_time]
+  optimization_method: "grid_search"  # Faster than NSGA-II for demo
+  population_size: 10
+  generations: 3
+  pareto_front: true
+
+extensions:
+  plugin_modules:
+    - plugins.objectives
+    - plugins.models
+
+evaluation:
+  metrics:
+    - iou
+    - f1_score
+    - precision
+    - recall
+    - accuracy
+  inference_runs: 10
+  warmup_runs: 5
+
+output:
+  base_dir: "outputs"
+  save_format: "png"
+  dpi: 150
+  figure_format: "presentation"

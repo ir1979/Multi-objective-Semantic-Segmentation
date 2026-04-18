@@ -1,0 +1,939 @@
+---
+title: "Extending the Framework: Custom Objectives, Models, and Workflows"
+subtitle: "A practical guide for researchers and developers"
+author: "Your Name"
+date: "`r Sys.Date()`"
+geometry: margin=1in
+fontsize: 11pt
+linestretch: 1.2
+code-fold: false
+code-summary: "Show/Hide Code"
+knitr:
+  opts_chunk:
+    echo: true
+    message: false
+    warning: false
+    fig.align: "center"
+    fig.width: 8
+    fig.height: 6
+    out.width: "80%"
+format:
+  pdf:
+    latex_engine: xelatex
+    colorlinks: true
+    citecolor: blue
+    urlcolor: blue
+    linkcolor: blue
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    highlight: tango
+    fontsize: 11pt
+    geometry: margin=1in
+    documentclass: article
+    includes:
+      in_header: |
+        \usepackage{graphicx}
+        \usepackage{booktabs}
+        \usepackage{longtable}
+        \usepackage{amsmath}
+        \usepackage{amssymb}
+        \usepackage{siunitx}
+        \sisetup{detect-all}
+        \usepackage{listings}
+        \usepackage{xcolor}
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue},
+  stringstyle=\color{orange},
+  commentstyle=\color{green!60!black},
+  showstringspaces=false,
+  breaklines=true,
+  frame=single,
+  numbers=left,
+  numberstyle=\tiny\color{gray}
+}
+---
+
+# Abstract
+
+This tutorial provides a hands-on guide to extending the multi-objective optimization framework with custom objectives, custom models, and specialized workflows. We cover: (1) defining novel optimization objectives (e.g., domain-specific metrics), (2) implementing new segmentation architectures, (3) creating custom training pipelines, (4) integrating with external libraries, and (5) building publication-ready analysis scripts. Each section includes complete, runnable code examples that you can adapt to your research needs.
+
+# 1. Introduction
+
+## 1.1 Why Extend?
+
+The base framework supports common objectives (IoU, F1, params, speed) and standard architectures (Unet, FPN, etc.). However, research often requires:
+
+- **Domain-specific objectives**: e.g., "building compactness score" for urban planning
+- **Custom architectures**: e.g., your novel U-Net variant
+- **Specialized losses**: e.g., topology-preserving losses
+- **Novel evaluation metrics**: e.g., edge-aware IoU
+- **Alternative optimization**: e.g., evolutionary strategies beyond NSGA-II
+
+The plugin system allows you to extend without modifying core code, preserving upgrade compatibility.
+
+## 1.2 Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     CORE FRAMEWORK                           │
+│  (main.py, config_manager.py, model_factory.py, trainer.py) │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+          ┌───────────────┼───────────────┐
+          │               │               │
+          ▼               ▼               ▼
+┌───────────────┐ ┌───────────────┐ ┌───────────────┐
+│   Plugins     │ │   Custom      │ │   User        │
+│   Loader      │ │   Code        │ │   Analysis    │
+│               │ │   (your repo) │ │   Scripts     │
+└───────────────┘ └───────────────┘ └───────────────┘
+```
+
+**Key insight**: Plugins are loaded at runtime from `plugins/` directory, so you can add components without touching core files.
+
+# 2. Custom Objectives
+
+## 2.1 Understanding Objectives
+
+An objective is a function that:
+1. Takes experiment results (dict with metrics, configs, summaries)
+2. Returns a scalar score (float)
+3. Specifies optimization direction (maximize or minimize)
+
+**Example: Paper Quality Score**
+
+```python
+register_objective(
+    name="paper_quality",
+    direction="max",
+    getter=lambda result: (
+        0.6 * float(result["summary"].get("final_val_iou", 0.0))
+        + 0.3 * float(result["summary"].get("final_val_boundary_iou", 0.0))
+        + 0.1 * float(result.get("efficiency_score", 0.0))
+    ),
+    description="Weighted composite for paper reporting.",
+    overwrite=True,
+)
+```
+
+## 2.2 Creating a Custom Objective
+
+### Step 1: Edit `plugins/objectives.py`
+
+Open `plugins/objectives.py` and add your objective:
+
+```python
+from src import register_objective
+
+# Example: Compactness-aware objective
+register_objective(
+    name="compact_iou",
+    direction="max",
+    getter=lambda result: float(result.get("summary", {}).get("compact_iou", 0.0)),
+    description="IoU weighted by shape compactness.",
+    overwrite=True,
+)
+
+# Example: Speed-accuracy trade-off
+register_objective(
+    name="saturation_score",
+    direction="max",
+    getter=lambda result: (
+        float(result["summary"].get("final_val_iou", 0.0)) 
+        / (1.0 + float(result.get("inference_time", 0.0)) / 100.0)
+    ),
+    description="Accuracy normalized by inference time.",
+    overwrite=True,
+)
+```
+
+### Step 2: Define the Metric Calculation
+
+The `getter` function expects keys like `result["summary"]["final_val_iou"]`. You need to ensure these keys exist.
+
+**Option A: Modify `training/trainer.py`**
+
+Add custom metric to training summary:
+
+```python
+# In training/trainer.py, after training:
+summary["compact_iou"] = compactness_score(y_true, y_pred)
+summary["saturation_score"] = iou / (1 + inference_time / 100)
+```
+
+**Option B: Compute in `src/evaluate.py`**
+
+Override the evaluation function:
+
+```python
+from src import evaluate_model
+from training.metrics import compactness_score
+
+def evaluate_with_compact_iou(model, dataset):
+    results = evaluate_model(model, dataset)
+    # Compute compactness
+    y_true, y_pred = get_predictions(model, dataset)
+    results["compact_iou"] = compactness_score(y_true, y_pred)
+    return results
+```
+
+### Step 3: Activate in Config
+
+```yaml
+multi_objective:
+  objectives: [iou, compact_iou, saturation_score, param_count]
+  optimization_method: "grid_search"
+```
+
+## 2.3 Advanced Objective: Multi-Step Computation
+
+For complex objectives requiring intermediate data:
+
+```python
+from src import register_objective
+import numpy as np
+
+register_objective(
+    name="balanced_quality",
+    direction="max",
+    getter=lambda result: compute_balanced_quality(result),
+    description="Balanced metric combining region and boundary quality.",
+    overwrite=True,
+)
+
+def compute_balanced_quality(result: dict) -> float:
+    """Compute balanced quality score."""
+    iou = float(result["summary"].get("final_val_iou", 0.0))
+    boundary_iou = float(result["summary"].get("final_val_boundary_iou", 0.0))
+    precision = float(result["summary"].get("final_val_precision", 0.0))
+    recall = float(result["summary"].get("final_val_recall", 0.0))
+    
+    # Harmonic mean of precision and recall
+    f1 = 2 * precision * recall / (precision + recall + 1e-7)
+    
+    # Weighted combination
+    score = 0.4 * iou + 0.3 * boundary_iou + 0.3 * f1
+    
+    # Penalize large models
+    params = float(result.get("param_count", 0))
+    if params > 10e6:
+        score *= 0.9  # 10% penalty for >10M params
+    
+    return score
+```
+
+# 3. Custom Models
+
+## 3.1 Registering a Custom Architecture
+
+### Step 1: Define Your Model
+
+Create a new file `models/my_custom_unet.py`:
+
+```python
+from tensorflow import keras
+
+def build_my_custom_unet(input_shape, num_classes, **kwargs):
+    """
+    Custom U-Net with attention gates.
+    
+    Args:
+        input_shape: (height, width, channels)
+        num_classes: number of output classes
+        
+    Returns:
+        Keras model
+    """
+    inputs = keras.Input(shape=input_shape)
+    
+    # Encoder
+    x = keras.layers.Conv2D(64, 3, padding='same', activation='relu')(inputs)
+    x = keras.layers.Conv2D(64, 3, padding='same', activation='relu')(x)
+    p1 = keras.layers.MaxPooling2D()(x)
+    
+    x = keras.layers.Conv2D(128, 3, padding='same', activation='relu')(p1)
+    x = keras.layers.Conv2D(128, 3, padding='same', activation='relu')(x)
+    p2 = keras.layers.MaxPooling2D()(x)
+    
+    # Bottleneck
+    x = keras.layers.Conv2D(256, 3, padding='same', activation='relu')(p2)
+    x = keras.layers.Conv2D(256, 3, padding='same', activation='relu')(x)
+    
+    # Decoder
+    u3 = keras.layers.UpSampling2D()(x)
+    u3 = keras.layers.Concatenate()([u3, x])  # Simplified skip connection
+    x = keras.layers.Conv2D(128, 3, padding='same', activation='relu')(u3)
+    
+    u2 = keras.layers.UpSampling2D()(x)
+    u2 = keras.layers.Concatenate()([u2, p1])
+    x = keras.layers.Conv2D(64, 3, padding='same', activation='relu')(u2)
+    
+    outputs = keras.layers.Conv2D(num_classes, 1, activation='sigmoid')(x)
+    
+    return keras.Model(inputs, outputs)
+```
+
+### Step 2: Register the Model
+
+Edit `plugins/models.py`:
+
+```python
+from tensorflow import keras
+from models import register_model_builder
+
+def build_my_custom_unet(**kwargs):
+    return __import__("models.my_custom_unet", fromlist=["build_my_custom_unet"]).build_my_custom_unet(
+        input_shape=kwargs["input_shape"],
+        num_classes=kwargs["num_classes"],
+    )
+
+register_model_builder(
+    name="MyCustomUnet",
+    builder=build_my_custom_unet,
+    aliases=["my_custom_unet"],
+    metadata={
+        "description": "Custom U-Net with attention gates",
+        "author": "Your Name",
+        "citation": "Your paper reference"
+    },
+    overwrite=True,
+)
+```
+
+### Step 3: Use in Config
+
+```yaml
+models:
+  architectures: [Unet, MyCustomUnet]
+  encoders: [resnet34]
+```
+
+## 3.2 Advanced: Parameterized Models
+
+Create models with tunable hyperparameters:
+
+```python
+def build_depth_unet(**kwargs):
+    """U-Net with depth parameter."""
+    depth = kwargs.get("depth", 4)  # Number of encoder blocks
+    filters_base = kwargs.get("filters", 64)
+    
+    inputs = keras.Input(shape=kwargs["input_shape"])
+    x = inputs
+    
+    # Build encoder
+    skip_connections = []
+    for i in range(depth):
+        filters = filters_base * (2 ** i)
+        x = keras.layers.Conv2D(filters, 3, padding='same', activation='relu')(x)
+        x = keras.layers.Conv2D(filters, 3, padding='same', activation='relu')(x)
+        skip_connections.append(x)
+        x = keras.layers.MaxPooling2D()(x)
+    
+    # Decoder
+    for i in range(depth - 1, -1, -1):
+        filters = filters_base * (2 ** i)
+        x = keras.layers.UpSampling2D()(x)
+        x = keras.layers.Concatenate()([x, skip_connections[i]])
+        x = keras.layers.Conv2D(filters, 3, padding='same', activation='relu')(x)
+    
+    outputs = keras.layers.Conv2D(kwargs["num_classes"], 1, activation="sigmoid")(x)
+    return keras.Model(inputs, outputs)
+```
+
+Register with parameters:
+
+```yaml
+models:
+  architectures: [DepthUnet]
+  # Add parameters to model factory
+  depth: [3, 4, 5]  # Tunable depth
+  filters: [64, 128]
+```
+
+# 4. Custom Training Pipelines
+
+## 4.1 Creating a Custom Trainer
+
+### Step 1: Create `training/trainer_custom.py`
+
+```python
+from tensorflow import keras
+from training.metrics import iou_score, dice_score
+
+def train_with_custom_callback(model, train_ds, val_ds, config):
+    """
+    Custom training with specialized callbacks.
+    
+    Args:
+        model: Keras model
+        train_ds: Training dataset
+        val_ds: Validation dataset
+        config: Training configuration dict
+        
+    Returns:
+        Training history
+    """
+    # Custom callback: Track learning rate
+    class LRCallback(keras.callbacks.Callback):
+        def on_epoch_end(self, epoch, logs=None):
+            lr = keras.backend.get_value(self.model.optimizer.learning_rate)
+            self.model.logger.info(f"Epoch {epoch}: Learning rate = {lr}")
+    
+    # Custom callback: Early stopping with patience scaling
+    class AdaptiveEarlyStopping(keras.callbacks.Callback):
+        def __init__(self, patience=10, min_delta=0.001):
+            super().__init__()
+            self.patience = patience
+            self.min_delta = min_delta
+            self.wait = 0
+            self.best_epoch = 0
+            
+        def on_epoch_end(self, epoch, logs=None):
+            current = logs.get("val_loss")
+            if current is None:
+                return
+            
+            if self.best_loss is None or current < self.best_loss - self.min_delta:
+                self.best_loss = current
+                self.best_epoch = epoch
+                self.wait = 0
+            else:
+                self.wait += 1
+                if self.wait >= self.patience:
+                    self.model.logger.info(f"Early stopping at epoch {epoch}")
+                    self.model.stop_training = True
+    
+    # Compile model
+    optimizer = keras.optimizers.Adam(learning_rate=config.get("learning_rate", 1e-3))
+    model.compile(
+        optimizer=optimizer,
+        loss="binary_crossentropy",
+        metrics=[iou_score, dice_score]
+    )
+    
+    # Train
+    history = model.fit(
+        train_ds,
+        validation_data=val_ds,
+        epochs=config.get("epochs", 50),
+        callbacks=[
+            LRCallback(),
+            AdaptiveEarlyStopping(patience=10),
+        ],
+        verbose=1
+    )
+    
+    return history
+```
+
+### Step 2: Integrate with Optimization
+
+Edit `src/optimize.py`:
+
+```python
+from training.trainer_custom import train_with_custom_callback
+
+def evaluate_with_custom_trainer(config, **kwargs):
+    """Use custom training pipeline."""
+    model = build_model(...)
+    train_ds, val_ds = create_datasets(...)
+    
+    history = train_with_custom_callback(model, train_ds, val_ds, config)
+    
+    # Extract metrics
+    return {
+        "final_val_iou": history.history["val_iou_score"][-1],
+        "final_val_dice": history.history["val_dice_score"][-1],
+        # ... other metrics
+    }
+```
+
+# 5. Custom Evaluation Metrics
+
+## 5.1 Adding New Metrics
+
+### Step 1: Define Metric in `training/metrics.py`
+
+```python
+import tensorflow as tf
+
+def topological_correctness(y_true, y_pred, eps=1e-7):
+    """
+    Approximate topological correctness using connected components.
+    
+    Measures whether predicted segmentation preserves the same
+    number of connected components as ground truth.
+    
+    Args:
+        y_true: Ground truth mask
+        y_pred: Predicted mask
+        eps: Epsilon for numerical stability
+        
+    Returns:
+        Scalar metric (1.0 = perfect topology)
+    """
+    y_true = tf.cast(y_true > 0.5, tf.uint8)
+    y_pred = tf.cast(y_pred > 0.5, tf.uint8)
+    
+    # Count connected components (simplified version)
+    true_count = tf.reduce_sum(y_true)  # Placeholder
+    pred_count = tf.reduce_sum(y_pred)  # Placeholder
+    
+    return 1.0 - abs(true_count - pred_count) / (true_count + eps)
+```
+
+### Step 2: Register as Objective
+
+```python
+from src import register_objective
+
+register_objective(
+    name="topological_score",
+    direction="max",
+    getter=lambda result: float(result.get("summary", {}).get("topological_correctness", 0.0)),
+    description="Topological correctness metric.",
+    overwrite=True,
+)
+```
+
+# 6. Custom Analysis Scripts
+
+## 6.1 Pareto Analysis
+
+Create `scripts/analyze_pareto.py`:
+
+```python
+#!/usr/bin/env python3
+"""Analyze Pareto fronts from experiment results."""
+
+import argparse
+import json
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pathlib import Path
+
+def load_results(csv_path: str) -> pd.DataFrame:
+    """Load results from CSV file."""
+    return pd.read_csv(csv_path)
+
+def compute_pareto_front(df: pd.DataFrame, objectives: list, directions: list) -> pd.DataFrame:
+    """
+    Compute Pareto front for given objectives.
+    
+    Args:
+        df: Results DataFrame
+        objectives: List of objective column names
+        directions: List of 'max' or 'min' for each objective
+        
+    Returns:
+        DataFrame of Pareto-optimal solutions
+    """
+    # Normalize objectives
+    df_normalized = df.copy()
+    for obj, direction in zip(objectives, directions):
+        if direction == "min":
+            df_normalized[obj] = -df[obj]
+    
+    # Find non-dominated solutions
+    pareto_mask = pd.Series([True] * len(df))
+    for i in range(len(df)):
+        for j in range(len(df)):
+            if i != j:
+                dominated = all(
+                    df_normalized.loc[j, obj] <= df_normalized.loc[i, obj]
+                    for obj in objectives
+                ) and any(
+                    df_normalized.loc[j, obj] < df_normalized.loc[i, obj]
+                    for obj in objectives
+                )
+                if dominated:
+                    pareto_mask.iloc[i] = False
+                    break
+    
+    return df[pareto_mask]
+
+def plot_pareto_2d(df: pd.DataFrame, x_obj: str, y_obj: str, 
+                   output_path: str, title: str = None):
+    """Plot 2D Pareto front."""
+    pareto = compute_pareto_front(df, [x_obj, y_obj], ["max", "max"])
+    
+    plt.figure(figsize=(8, 6))
+    plt.scatter(df[x_obj], df[y_obj], alpha=0.5, label="All solutions", color="gray")
+    plt.scatter(pareto[x_obj], pareto[y_obj], 
+                s=100, c="red", marker="*", label="Pareto-optimal")
+    
+    plt.xlabel(x_obj.replace("_", " ").title())
+    plt.ylabel(y_obj.replace("_", " ").title())
+    if title:
+        plt.title(title)
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--results", required=True, help="Path to results CSV")
+    parser.add_argument("--output", required=True, help="Output directory")
+    args = parser.parse_args()
+    
+    df = load_results(args.results)
+    Path(args.output).mkdir(parents=True, exist_ok=True)
+    
+    # Generate plots
+    plot_pareto_2d(df, "iou", "param_count", 
+                   f"{args.output}/pareto_iou_vs_params.png",
+                   title="Pareto Front: Accuracy vs Complexity")
+    
+    plot_pareto_2d(df, "iou", "inference_time",
+                   f"{args.output}/pareto_iou_vs_time.png",
+                   title="Pareto Front: Accuracy vs Speed")
+    
+    # Generate report
+    pareto = compute_pareto_front(df, ["iou", "f1_score", "param_count", "inference_time"],
+                                  ["max", "max", "min", "min"])
+    
+    report_path = f"{args.output}/pareto_report.txt"
+    with open(report_path, "w") as f:
+        f.write("PARETO-OPTIMAL SOLUTIONS REPORT\n")
+        f.write("=" * 50 + "\n\n")
+        f.write(f"Number of Pareto-optimal solutions: {len(pareto)}\n\n")
+        
+        for i, row in pareto.iterrows():
+            f.write(f"Solution {i+1}: {row['experiment_id']}\n")
+            f.write(f"  Architecture: {row['architecture']}\n")
+            f.write(f"  Encoder: {row['encoder']}\n")
+            f.write(f"  IoU: {row['iou']:.4f}\n")
+            f.write(f"  F1: {row['f1_score']:.4f}\n")
+            f.write(f"  Params: {row['param_count']/1e6:.2f}M\n")
+            f.write(f"  Time: {row['inference_time']:.2f} ms\n")
+            f.write("\n")
+    
+    print(f"Analysis complete. Results saved to {args.output}")
+
+if __name__ == "__main__":
+    main()
+```
+
+Run the script:
+
+```bash
+python scripts/analyze_pareto.py \
+  --results outputs/ablation_architectures_XXXXXX/tables/results.csv \
+  --output figs/analysis
+```
+
+## 6.2 Automated Table Generation
+
+Create `scripts/generate_latex_tables.py`:
+
+```python
+#!/usr/bin/env python3
+"""Generate LaTeX tables from experiment results."""
+
+import argparse
+import pandas as pd
+from pathlib import Path
+
+def generate_comparison_table(csv_path: str, latex_path: str, top_k: int = 10):
+    """Generate LaTeX table of top-k configurations."""
+    df = pd.read_csv(csv_path)
+    
+    # Sort by IoU
+    df_sorted = df.sort_values("iou", ascending=False).head(top_k)
+    
+    # Select and format columns
+    columns = ["architecture", "encoder", "iou", "f1_score", "precision", 
+               "recall", "param_count", "flops", "inference_time"]
+    df_display = df_sorted[[col for col in columns if col in df_sorted.columns]].copy()
+    
+    # Format large numbers
+    df_display["param_count"] = df_display["param_count"].apply(
+        lambda x: f"{x/1e6:.2f}M" if x >= 1e6 else f"{x/1e3:.2f}K"
+    )
+    df_display["flops"] = df_display["flops"].apply(
+        lambda x: f"{x/1e9:.2f}G" if x >= 1e9 else f"{x/1e6:.2f}M"
+    )
+    df_display["inference_time"] = df_display["inference_time"].apply(
+        lambda x: f"{x:.2f}"
+    )
+    
+    # Format metrics
+    for col in ["iou", "f1_score", "precision", "recall"]:
+        if col in df_display.columns:
+            df_display[col] = df_display[col].apply(lambda x: f"{x:.4f}")
+    
+    # Rename columns for LaTeX
+    column_map = {
+        "iou": "IoU",
+        "f1_score": "F1",
+        "precision": "Precision",
+        "recall": "Recall",
+        "param_count": "Params",
+        "flops": "FLOPs",
+        "inference_time": "Time (ms)"
+    }
+    df_display = df_display.rename(columns=column_map)
+    
+    # Generate LaTeX
+    latex = df_display.to_latex(index=False, escape=False)
+    
+    # Add table environment
+    table_str = f"""\begin{{table}}[htbp]
+\centering
+\caption{{Top {{top_k}} Configurations by IoU}}
+\label{{tab:top_results}}
+{latex}
+\end{{table}}
+"""
+    
+    Path(latex_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(latex_path, "w") as f:
+        f.write(table_str)
+    
+    print(f"LaTeX table saved to {latex_path}")
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--results", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--top-k", type=int, default=10)
+    args = parser.parse_args()
+    
+    generate_comparison_table(args.results, args.output, args.top_k)
+
+if __name__ == "__main__":
+    main()
+```
+
+# 7. Integration with External Libraries
+
+## 7.1 Integration with `segmentation_models`
+
+Use pre-trained encoders from `segmentation_models`:
+
+```python
+from models import build_model
+
+# Use efficientnetb4 with imagenet weights
+model = build_model(
+    architecture="Unet",
+    encoder="efficientnetb4",
+    encoder_weights="imagenet",
+    input_shape=(512, 512, 3),
+    num_classes=1
+)
+```
+
+Add to config:
+
+```yaml
+models:
+  architectures: [Unet]
+  encoders: [efficientnetb4, efficientnetb5]
+  encoder_weights: [imagenet]
+```
+
+## 7.2 Integration with `albumentations`
+
+Custom augmentation pipeline:
+
+```python
+import albumentations as A
+
+class AdvancedAugmentation:
+    def __init__(self, tile_size=256):
+        self.transform = A.Compose([
+            A.RandomBrightnessContrast(p=0.5),
+            A.RandomRotate90(p=0.5),
+            A.Flip(p=0.5),
+            A.ShiftScaleRotate(p=0.5),
+            A.ElasticTransform(p=0.3),
+            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+    
+    def __call__(self, image, mask):
+        transformed = self.transform(image=image, mask=mask)
+        return transformed["image"], transformed["mask"]
+```
+
+Use in `data/augmentation.py`:
+
+```python
+from data.augmentation import build_augmentation_from_config
+
+# Register custom augmentation
+AUGMENTATION_CONFIGS["advanced"] = AdvancedAugmentation()
+```
+
+# 8. Debugging and Testing
+
+## 8.1 Debugging Custom Objectives
+
+```python
+# Test objective function
+from src.objectives import register_objective
+
+def test_custom_objective():
+    sample_result = {
+        "summary": {
+            "final_val_iou": 0.7234,
+            "final_val_boundary_iou": 0.7456
+        },
+        "param_count": 8456123,
+        "inference_time": 15.43
+    }
+    
+    # Register test objective
+    register_objective(
+        name="test_objective",
+        direction="max",
+        getter=lambda r: r["summary"]["final_val_iou"] * 0.7 + r["summary"]["final_val_boundary_iou"] * 0.3,
+        overwrite=True
+    )
+    
+    from src.objectives import resolve_objective_specs
+    specs = resolve_objective_specs(["test_objective"])
+    value = specs[0].extract(sample_result)
+    print(f"Test objective value: {value}")
+    # Expected: 0.7305
+
+test_custom_objective()
+```
+
+## 8.2 Testing Custom Models
+
+```python
+from models import build_model
+
+def test_custom_model():
+    model = build_model(
+        architecture="MyCustomUnet",
+        input_shape=(256, 256, 3),
+        num_classes=1
+    )
+    
+    # Test forward pass
+    import numpy as np
+    x = np.random.randn(1, 256, 256, 3).astype(np.float32)
+    y = model(x, training=False)
+    
+    assert y.shape == (1, 256, 256, 1)
+    print("Custom model test passed!")
+
+test_custom_model()
+```
+
+# 9. Production Deployment
+
+## 9.1 Exporting Trained Models
+
+```python
+from tensorflow import keras
+import json
+
+# Load trained model
+model = keras.models.load_model("outputs/run_XXXXXX/checkpoints/epoch_050.h5")
+
+# Export to TensorFlow SavedModel
+model.save("deploy/my_model")
+
+# Save config
+with open("deploy/config.json", "w") as f:
+    json.dump({
+        "architecture": "Unet",
+        "encoder": "resnet34",
+        "input_shape": (256, 256, 3),
+        "num_classes": 1
+    }, f, indent=2)
+```
+
+## 9.2 Inference Pipeline
+
+```python
+import cv2
+import numpy as np
+from tensorflow import keras
+
+def predict_building_mask(image_path, model_path):
+    """Predict building mask from satellite image."""
+    # Load model
+    model = keras.models.load_model(model_path)
+    
+    # Load image
+    image = cv2.imread(image_path)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image = image.astype(np.float32) / 255.0
+    image = np.expand_dims(image, axis=0)
+    
+    # Predict
+    prediction = model.predict(image)[0]
+    
+    # Threshold
+    mask = (prediction > 0.5).astype(np.uint8) * 255
+    
+    return mask
+
+# Usage
+mask = predict_building_mask("input.jpg", "deploy/my_model")
+cv2.imwrite("output_mask.png", mask)
+```
+
+# 10. Checklist for Production-Ready Extensions
+
+## 10.1 Code Quality
+
+- [ ] All custom code follows project style (PEP 8)
+- [ ] Functions have docstrings
+- [ ] Type hints are included
+- [ ] Error handling is robust
+- [ ] Logging is comprehensive
+
+## 10.2 Documentation
+
+- [ ] Custom objectives are documented in `plugins/objectives.py`
+- [ ] Custom models have metadata (author, citation)
+- [ ] Config templates include comments
+- [ ] README updated with new capabilities
+
+## 10.3 Testing
+
+- [ ] Unit tests for custom components
+- [ ] Integration tests with main pipeline
+- [ ] Smoke test passes
+- [ ] No regressions in existing functionality
+
+## 10.4 Reproducibility
+
+- [ ] Random seeds are fixed
+- [ ] Git commit is recorded
+- [ ] Config files are version-controlled
+- [ ] All dependencies are in `requirements.txt`
+
+# 11. Conclusion
+
+Extending the framework enables you to:
+
+1. **Define domain-specific objectives** that capture research priorities
+2. **Implement novel architectures** without modifying core code
+3. **Create specialized training pipelines** for your use case
+4. **Build custom analysis scripts** for publication-ready results
+
+The plugin system ensures your extensions are compatible with future framework updates, enabling long-term research sustainability.
+
+# References
+
+1. Goodfellow, I., et al. (2016). Deep Learning. MIT Press.
+2. Keras Documentation. https://keras.io/
+3. Albumentations. https://albumentations.ai/
+4. Segmentation Models. https://github.com/qubvel/segmentation_models
+
+---
+
+*This guide complements the main tutorial and ablation studies guide for a complete research workflow.*
+\end{document}

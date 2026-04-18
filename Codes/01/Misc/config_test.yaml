@@ -1,0 +1,18 @@
+model_name: "unet"
+epochs: 2
+batch_size: 2
+lr: 0.0001
+deep_supervision: false
+
+losses:
+  - bce
+
+dataset:
+  rgb_glob: "./datasets/RGB/*.png"
+  mask_glob: "./datasets/Mask/*.tif"
+  train_split: 0.5
+
+output_dir: "./results/test_run"
+experiment_name: "quick_verification"
+log_every: 10
+resume: false

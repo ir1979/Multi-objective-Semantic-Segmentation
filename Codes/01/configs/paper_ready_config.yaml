@@ -1,0 +1,74 @@
+# Paper-ready configuration for multi-objective building footprint experiments
+
+experiment:
+  name: "building_footprint_paper"
+  seed: [42, 123, 456]
+  description: "Paper-ready multi-objective experiment with extensible plugin objectives and model registry"
+  save_predictions: true
+  save_checkpoints: true
+
+dataset:
+  name: "Inria Aerial"
+  rgb_path: "datasets/RGB"
+  mask_path: "datasets/Mask"
+  tile_size: [256]
+  augmentations:
+    - [flip, rotate]
+    - [flip, rotate, brightness]
+  train_val_test_split: [0.7, 0.15, 0.15]
+  normalize: true
+  preload: false
+
+models:
+  architectures: [Unet, UnetPlusPlus, TinyPaperUNet]
+  encoders: [resnet34, resnet50]
+  encoder_weights: [imagenet, null]
+  activation: sigmoid
+  deep_supervision: false
+
+training:
+  loss_functions: [dice_loss, combo_loss]
+  optimizers: [Adam]
+  learning_rates: [1e-3, 5e-4]
+  batch_sizes: [4, 8]
+  epochs: [30]
+  schedulers: [ReduceLROnPlateau]
+  early_stopping:
+    enabled: true
+    patience: 8
+    min_delta: 0.001
+  mixed_precision: true
+
+multi_objective:
+  objectives: [paper_quality, boundary_iou, param_count, inference_time]
+  optimization_method: "grid_search"
+  evaluation_epochs: 10
+  quick_max_configs: 4
+  quick_inference_runs: 5
+  quick_warmup_runs: 2
+  population_size: 24
+  generations: 20
+  pareto_front: true
+
+extensions:
+  plugin_modules:
+    - plugins.objectives
+    - plugins.models
+
+evaluation:
+  metrics:
+    - iou
+    - f1_score
+    - precision
+    - recall
+    - accuracy
+    - boundary_iou
+    - boundary_f1
+  inference_runs: 30
+  warmup_runs: 5
+
+output:
+  base_dir: "outputs"
+  save_format: "png"
+  dpi: 300
+  figure_format: "publication"

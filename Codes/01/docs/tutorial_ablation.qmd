@@ -1,0 +1,624 @@
+---
+title: "Ablation Studies with the Multi-Objective Framework"
+subtitle: "Systematically investigating model, data, and training factors"
+author: "Your Name"
+date: "`r Sys.Date()`"
+geometry: margin=1in
+fontsize: 11pt
+linestretch: 1.2
+code-fold: false
+code-summary: "Show/Hide Code"
+knitr:
+  opts_chunk:
+    echo: true
+    message: false
+    warning: false
+    fig.align: "center"
+    fig.width: 8
+    fig.height: 6
+    out.width: "80%"
+format:
+  pdf:
+    latex_engine: xelatex
+    colorlinks: true
+    citecolor: blue
+    urlcolor: blue
+    linkcolor: blue
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    highlight: tango
+    fontsize: 11pt
+    geometry: margin=1in
+    documentclass: article
+    includes:
+      in_header: |
+        \usepackage{graphicx}
+        \usepackage{booktabs}
+        \usepackage{longtable}
+        \usepackage{amsmath}
+        \usepackage{amssymb}
+        \usepackage{siunitx}
+        \sisetup{detect-all}
+---
+
+# Abstract
+
+Ablation studies are essential for understanding the contribution of individual components to overall system performance. This guide demonstrates how to use the multi-objective optimization framework to systematically investigate: (1) model architecture choices, (2) encoder backbones, (3) loss function combinations, (4) augmentation strategies, and (5) training hyperparameters. Each factor is explored with quantitative metrics (IoU, F1, boundary quality, complexity, speed) and Pareto-optimal analysis. The examples provide reproducible workflows for publication-quality ablation results.
+
+# 1. Framework for Ablation Studies
+
+## 1.1 Why Ablation Studies?
+
+In semantic segmentation research, it's critical to understand:
+
+- **Which architectural components** actually improve performance?
+- **Do deeper encoders** (ResNet-152 vs ResNet-18) justify their computational cost?
+- **Are complex losses** (e.g., combo_loss) worth the training time?
+- **Do augmentations** generalize or overfit?
+
+Ablation isolates one variable at a time while controlling others, enabling clean comparisons.
+
+## 1.2 Multi-Objective Advantage
+
+Single-objective ablation (e.g., "which architecture has highest IoU?") misses crucial insights:
+
+- Architecture A: IoU = 0.75, but 2× slower
+- Architecture B: IoU = 0.73, but 3× faster
+
+Multi-objective analysis reveals **trade-offs** that single metrics hide.
+
+## 1.3 Study Design Principles
+
+**1. Control Variables**
+```yaml
+# Keep constant
+seed: [42]
+tile_size: [256]
+train_val_test_split: [0.7, 0.15, 0.15]
+optimizer: [Adam]
+learning_rate: [1e-3]
+batches: [4]
+```
+
+**2. Vary One Factor**
+```yaml
+# Vary: architecture
+architectures: [Unet, UnetPlusPlus, FPN, DeepLabV3Plus]
+# Keep constant
+encoder: [resnet34]
+loss_functions: [dice_loss]
+```
+
+**3. Replicate for Robustness**
+```yaml
+experiment:
+  seed: [42, 123, 456]  # Multiple seeds
+```
+
+# 2. Architecture Ablation
+
+## 2.1 Experiment Configuration
+
+Create `configs/ablation_architectures.yaml`:
+
+```yaml
+experiment:
+  name: "ablation_architectures"
+  seed: [42, 123, 456]
+  description: "Compare segmentation architectures with fixed encoder"
+
+dataset:
+  name: "Inria Aerial"
+  rgb_path: "datasets/RGB"
+  mask_path: "datasets/Mask"
+  tile_size: [256]
+  augmentations: [[flip, rotate, brightness]]
+  train_val_test_split: [0.7, 0.15, 0.15]
+
+models:
+  architectures: [Unet, UnetPlusPlus, FPN, Linknet, DeepLabV3Plus, PSPNet]
+  encoders: [resnet34]
+  encoder_weights: [imagenet]
+
+training:
+  loss_functions: [dice_loss]
+  optimizers: [Adam]
+  learning_rates: [1e-3]
+  batch_sizes: [8]
+  epochs: [50]
+  schedulers: [ReduceLROnPlateau]
+  early_stopping:
+    enabled: true
+    patience: 10
+
+multi_objective:
+  objectives: [iou, f1_score, param_count, inference_time]
+  optimization_method: "grid_search"
+  pareto_front: true
+
+extensions:
+  plugin_modules:
+    - plugins.objectives
+    - plugins.models
+
+evaluation:
+  metrics: [iou, f1_score, precision, recall, boundary_iou, boundary_f1]
+  inference_runs: 50
+  warmup_runs: 10
+
+output:
+  base_dir: "outputs"
+  dpi: 300
+```
+
+## 2.2 Run the Experiment
+
+```bash
+python main.py --config configs/ablation_architectures.yaml --mode full
+```
+
+**Expected runtime**: ~2-4 hours (depending on GPU).
+
+## 2.3 Results Analysis
+
+### 2.3.1 Summary Table
+
+```bash
+cat outputs/ablation_architectures_XXXXXX/tables/results.csv
+```
+
+**Expected output format**:
+
+| Architecture | Encoder | IoU | F1 | Precision | Recall | Params | FLOPs | Inference (ms) |
+|--------------|---------|-----|-----|-----------|--------|--------|-------|----------------|
+| Unet | resnet34 | 0.723 ± 0.012 | 0.812 ± 0.008 | 0.789 | 0.845 | 8.5M | 1.2G | 15.4 |
+| UnetPlusPlus | resnet34 | 0.731 ± 0.010 | 0.818 ± 0.007 | 0.795 | 0.851 | 9.1M | 1.4G | 18.2 |
+| FPN | resnet34 | 0.718 ± 0.011 | 0.807 ± 0.009 | 0.782 | 0.841 | 8.8M | 1.3G | 14.8 |
+| Linknet | resnet34 | 0.705 ± 0.013 | 0.795 ± 0.010 | 0.771 | 0.832 | 7.9M | 1.1G | 12.3 |
+| DeepLabV3Plus | resnet34 | 0.728 ± 0.009 | 0.815 ± 0.006 | 0.791 | 0.850 | 9.3M | 1.5G | 19.7 |
+
+### 2.3.2 Pareto Front Visualization
+
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Load results
+df = pd.read_csv("outputs/ablation_architectures_XXXXXX/tables/results.csv")
+
+# Plot IoU vs Parameter Count
+plt.figure(figsize=(8, 6))
+sns.scatterplot(data=df, x="param_count", y="iou", hue="architecture", 
+                s=100, marker="o", edgecolor="black")
+plt.xlabel("Parameters (M)")
+plt.ylabel("IoU")
+plt.title("Architecture Ablation: Accuracy vs Complexity")
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig("figs/arch_ablation_iou_vs_params.png", dpi=300)
+plt.show()
+```
+
+## 2.4 Interpretation Guidelines
+
+**Look for**:
+
+1. **Dominance**: Does one architecture dominate all others (better IoU AND lower params)?
+2. **Trade-offs**: Are there efficient architectures sacrificing little accuracy?
+3. **Variance**: High standard deviation across seeds suggests sensitivity to initialization.
+4. **Boundary quality**: Architecture A may have lower IoU but better boundary F1.
+
+**Example conclusion**:
+
+> "UnetPlusPlus achieves the highest mean IoU (0.731 ± 0.010) but requires 7% more parameters than Unet. The FPN architecture offers similar accuracy (0.718) with faster inference (14.8 ms vs 18.2 ms), making it attractive for real-time applications."
+
+# 3. Encoder Ablation
+
+## 3.1 Experiment Configuration
+
+Create `configs/ablation_encoders.yaml`:
+
+```yaml
+experiment:
+  name: "ablation_encoders"
+  seed: [42, 123, 456]
+
+dataset:
+  rgb_path: "datasets/RGB"
+  mask_path: "datasets/Mask"
+  tile_size: [256]
+
+models:
+  architectures: [Unet]
+  encoders: [resnet18, resnet34, resnet50, efficientnetb0, efficientnetb3]
+  encoder_weights: [imagenet]
+
+training:
+  loss_functions: [dice_loss]
+  optimizers: [Adam]
+  learning_rates: [1e-3]
+  batch_sizes: [8]
+  epochs: [50]
+
+multi_objective:
+  objectives: [iou, f1_score, param_count, inference_time, flops]
+  optimization_method: "grid_search"
+```
+
+## 3.2 Expected Findings
+
+**Hypothesis**:
+
+- Deeper encoders (ResNet-50) → higher accuracy but more params
+- EfficientNet encoders → better accuracy/params ratio
+
+**Visualization**:
+
+```python
+# IoU vs FLOPs
+df = pd.read_csv("outputs/ablation_encoders_XXXXXX/tables/results.csv")
+
+plt.figure(figsize=(8, 6))
+sns.scatterplot(data=df, x="flops", y="iou", 
+                hue="encoder", s=100, hue_order=df["encoder"].unique())
+plt.xscale("log")
+plt.xlabel("FLOPs (log scale)")
+plt.ylabel("IoU")
+plt.title("Encoder Ablation: Accuracy vs Computational Cost")
+plt.tight_layout()
+plt.savefig("figs/encoder_ablation.png", dpi=300)
+plt.show()
+```
+
+# 4. Loss Function Ablation
+
+## 4.1 Experiment Configuration
+
+Create `configs/ablation_losses.yaml`:
+
+```yaml
+experiment:
+  name: "ablation_losses"
+  seed: [42]
+
+models:
+  architectures: [Unet]
+  encoders: [resnet34]
+
+training:
+  loss_functions: [
+    "binary_crossentropy",
+    "dice_loss",
+    "focal_loss",
+    "combo_loss"
+  ]
+  # Keep other settings constant
+```
+
+**Note**: The `combo_loss` combines multiple loss terms (see `losses/loss_manager.py`).
+
+## 4.2 Results Comparison
+
+```bash
+cat outputs/ablation_losses_XXXXXX/tables/results.csv | grep -E "loss_function|iou|f1"
+```
+
+**Expected output**:
+
+| architecture | encoder | loss_function | iou | f1_score |
+|--------------|---------|---------------|-----|----------|
+| Unet | resnet34 | binary_crossentropy | 0.698 | 0.792 |
+| Unet | resnet34 | dice_loss | 0.723 | 0.812 |
+| Unet | resnet34 | focal_loss | 0.715 | 0.805 |
+| Unet | resnet34 | combo_loss | 0.731 | 0.818 |
+
+## 4.3 Analysis
+
+**Key questions**:
+
+1. Does the advanced loss (dice, focal, combo) outperform BCE?
+2. Is the complexity justified? (e.g., combo_loss trains slower)
+3. Are there stability issues (NaN loss, convergence failure)?
+
+# 5. Augmentation Strategy Ablation
+
+## 5.1 Experiment Configuration
+
+Create `configs/ablation_augmentation.yaml`:
+
+```yaml
+experiment:
+  name: "ablation_augmentation"
+  seed: [42, 123, 456]
+
+models:
+  architectures: [Unet]
+  encoders: [resnet34]
+
+training:
+  loss_functions: [dice_loss]
+  optimizers: [Adam]
+  learning_rates: [1e-3]
+  batch_sizes: [8]
+  epochs: [50]
+
+dataset:
+  augmentations:
+    - []                    # No augmentation (control)
+    - [flip, rotate]        # Basic augmentations
+    - [flip, rotate, brightness]  # Add brightness
+    - [flip, rotate, brightness, elastic_transform]  # Full augmentation
+```
+
+## 5.2 Run and Analyze
+
+```bash
+python main.py --config configs/ablation_augmentation.yaml --mode full
+```
+
+**Metrics to compare**:
+
+- **Validation IoU**: Does augmentation improve generalization?
+- **Training vs Validation gap**: Large gap → overfitting without augmentation
+- **Boundary metrics**: Do augmentations preserve edge quality?
+
+## 5.3 Expected Patterns
+
+| Augmentation | Val IoU | Train-Val Gap | Boundary F1 |
+|--------------|---------|---------------|-------------|
+| None | 0.685 | 0.045 | 0.712 |
+| Basic | 0.712 | 0.028 | 0.738 |
+| + Brightness | 0.718 | 0.022 | 0.745 |
+| Full | 0.723 | 0.018 | 0.751 |
+
+**Interpretation**:
+
+> "Progressive augmentation improves generalization (smaller train-val gap) and boundary quality, with full augmentation achieving the best results."
+
+# 6. Hyperparameter Ablation
+
+## 6.1 Learning Rate Study
+
+Create `configs/ablation_lr.yaml`:
+
+```yaml
+experiment:
+  name: "ablation_lr"
+  seed: [42]
+
+models:
+  architectures: [Unet]
+  encoders: [resnet34]
+
+training:
+  loss_functions: [dice_loss]
+  optimizers: [Adam]
+  learning_rates: [1e-2, 1e-3, 5e-4, 1e-4]  # Wide range
+  batch_sizes: [8]
+  epochs: [50]
+```
+
+## 6.2 Batch Size Study
+
+Create `configs/ablation_batchsize.yaml`:
+
+```yaml
+experiment:
+  name: "ablation_batchsize"
+  seed: [42]
+
+training:
+  loss_functions: [dice_loss]
+  learning_rates: [1e-3]
+  batch_sizes: [4, 8, 16, 32]  # Vary batch size
+  epochs: [50]
+```
+
+## 6.3 Analysis
+
+```python
+# LR convergence
+import pandas as pd
+import matplotlib.pyplot as plt
+
+df = pd.read_csv("outputs/ablation_lr_XXXXXX/tables/results.csv")
+plt.figure(figsize=(8, 6))
+sns.barplot(data=df, x="learning_rate", y="iou", errorbar="sd")
+plt.xlabel("Learning Rate")
+plt.ylabel("Validation IoU")
+plt.title("Learning Rate Sensitivity")
+plt.tight_layout()
+plt.show()
+```
+
+# 7. Comprehensive Ablation Table
+
+## 7.1 Template for Paper
+
+Use this LaTeX template for your ablation results:
+
+```latex
+\begin{table}[htbp]
+\centering
+\caption{Architecture Ablation Results}
+\label{tab:architecture_ablation}
+\begin{tabular}{lrrrrrrr}
+\toprule
+Architecture & IoU & F1 & Params & FLOPs & Time (ms) & Boundary IoU \\
+\midrule
+Unet & 0.723 \pm 0.012 & 0.812 \pm 0.008 & 8.5M & 1.2G & 15.4 & 0.742 \\
+UnetPlusPlus & 0.731 \pm 0.010 & 0.818 \pm 0.007 & 9.1M & 1.4G & 18.2 & 0.758 \\
+FPN & 0.718 \pm 0.011 & 0.807 \pm 0.009 & 8.8M & 1.3G & 14.8 & 0.735 \\
+Linknet & 0.705 \pm 0.013 & 0.795 \pm 0.010 & 7.9M & 1.1G & 12.3 & 0.721 \\
+DeepLabV3Plus & 0.728 \pm 0.009 & 0.815 \pm 0.006 & 9.3M & 1.5G & 19.7 & 0.762 \\
+\bottomrule
+\end{tabular}
+\end{table}
+```
+
+## 7.2 Statistical Significance
+
+For rigorous analysis, compute p-values:
+
+```python
+from scipy import stats
+
+# Compare Unet vs UnetPlusPlus
+unet_iou = [0.723, 0.728, 0.719]  # From multiple seeds
+unetpp_iou = [0.731, 0.735, 0.727]
+
+stat, p_value = stats.ttest_ind(unetpp_iou, unet_iou)
+print(f"p-value: {p_value:.4f}")
+# If p < 0.05, the difference is statistically significant
+```
+
+# 8. Pareto Analysis for Ablation
+
+## 8.1 Multi-Objective View
+
+Instead of comparing single metrics, analyze Pareto fronts:
+
+```bash
+# Extract Pareto results
+cat outputs/ablation_architectures_XXXXXX/tables/pareto_report.txt
+```
+
+## 8.2 Trade-off Visualization
+
+```python
+import matplotlib.pyplot as plt
+import pandas as pd
+
+df = pd.read_csv("outputs/ablation_architectures_XXXXXX/tables/results.csv")
+
+# 2D Pareto: IoU vs Inference Time
+plt.figure(figsize=(8, 6))
+plt.scatter(df["inference_time"], df["iou"], 
+            c=df["architecture"].factorize()[0], 
+            s=100, cmap="viridis", edgecolor="black")
+
+# Add Pareto front
+pareto_idx = df.sort_values("iou", ascending=False).index[:5]
+plt.plot(df.loc[pareto_idx, "inference_time"], 
+         df.loc[pareto_idx, "iou"], 
+         "r-", linewidth=2, label="Pareto front")
+
+plt.xlabel("Inference Time (ms)")
+plt.ylabel("IoU")
+plt.title("Architecture Pareto Front")
+plt.legend()
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig("figs/arch_pareto.png", dpi=300)
+plt.show()
+```
+
+# 9. Best Practices for Ablation Studies
+
+## 9.1 Experimental Design
+
+**DO**:
+
+- ✓ Control all variables except the one being studied
+- ✓ Use multiple seeds (≥3) for robustness
+- ✓ Report mean ± standard deviation
+- ✓ Include complexity/speed metrics
+- ✓ Visualize Pareto fronts
+
+**DON'T**:
+
+- ✗ Vary multiple factors simultaneously
+- ✗ Use single seed for conclusions
+- ✗ Report only accuracy metrics
+- ✗ Ignore computational cost
+- ✗ Overlook statistical significance
+
+## 9.2 Reproducibility Checklist
+
+- [ ] Save full config YAML files
+- [ ] Record git commit in summary.json
+- [ ] Log all hyperparameters
+- [ ] Keep raw results (CSV, JSON)
+- [ ] Archive all figures and plots
+
+## 9.3 Reporting Guidelines
+
+For each ablation study, report:
+
+1. **Study objective**: What question are you answering?
+2. **Controlled variables**: What was kept constant?
+3. **Varying factor**: What was changed?
+4. **Metrics**: Which objectives were optimized?
+5. **Results**: Table with mean ± std
+6. **Analysis**: What does the data tell you?
+7. **Conclusion**: What should future work do?
+
+# 10. Example Workflow
+
+## 10.1 Step-by-Step
+
+```bash
+# 1. Create config directory
+mkdir -p configs
+
+# 2. Create ablation config
+cat > configs/ablation_architectures.yaml << 'EOF'
+experiment:
+  name: "ablation_architectures"
+  seed: [42, 123, 456]
+
+dataset:
+  rgb_path: "datasets/RGB"
+  mask_path: "datasets/Mask"
+  tile_size: [256]
+
+models:
+  architectures: [Unet, UnetPlusPlus, FPN]
+  encoders: [resnet34]
+
+training:
+  loss_functions: [dice_loss]
+  learning_rates: [1e-3]
+  batch_sizes: [8]
+  epochs: [50]
+
+multi_objective:
+  objectives: [iou, f1_score, param_count, inference_time]
+  optimization_method: "grid_search"
+EOF
+
+# 3. Run experiment
+python main.py --config configs/ablation_architectures.yaml --mode full
+
+# 4. Generate figures
+python scripts/ablation_plots.py outputs/ablation_architectures_XXXXXX/tables/results.csv
+
+# 5. Copy LaTeX tables to paper
+cp outputs/ablation_architectures_XXXXXX/tables/results.tex figs/
+```
+
+# 11. Conclusion
+
+Ablation studies are essential for scientific rigor in segmentation research. This guide demonstrated:
+
+- **Architecture ablation**: Compare Unet variants on accuracy/efficiency trade-offs
+- **Encoder ablation**: Evaluate backbone depth vs computational cost
+- **Loss ablation**: Assess training objective effectiveness
+- **Augmentation ablation**: Quantify generalization improvements
+- **Hyperparameter ablation**: Understand sensitivity to LR, batch size
+
+By using multi-objective optimization, you gain insights that single-metric analysis misses, enabling better-informed decisions for publication and deployment.
+
+# References
+
+1. Abadi, M., et al. (2016). TensorFlow: A System for Large-Scale Machine Learning. *OSDI*.
+2. Ronneberger, O., et al. (2015). U-Net: Convolutional Networks for Biomedical Image Segmentation. *MICCAI*.
+3. Goodfellow, I., Bengio, Y., & Courville, A. (2016). Deep Learning. MIT Press.
+4. Hutter, F., et al. (2019). Automated Machine Learning. Springer.
+
+---
+
+*This ablation guide complements the main tutorial and provides reproducible workflows for systematic factor investigation.*
+\end{document}
