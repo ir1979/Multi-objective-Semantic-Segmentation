@@ -1,25 +1,25 @@
-import os
+"""Compatibility wrappers for experiment folder creation."""
 
-try:
-    import yaml
-except ImportError:
-    yaml = None
+from __future__ import annotations
 
+from pathlib import Path
+from typing import Any, Mapping
 
-def create_experiment_folder(base_path, experiment_name):
-    """Create a structured experiment folder for outputs."""
-    path = os.path.join(base_path, experiment_name)
-    subdirs = ["checkpoints", "figures", "tables", "results"]
-    for subdir in subdirs:
-        os.makedirs(os.path.join(path, subdir), exist_ok=True)
-    return path
+import yaml
 
 
-def write_experiment_config(path, config):
-    """Write experiment configuration to YAML if PyYAML is installed."""
-    if yaml is None:
-        raise ImportError("PyYAML is required to write config.yaml. Install it with pip install pyyaml.")
-    config_path = os.path.join(path, "config.yaml")
-    with open(config_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(config, f)
-    return config_path
+def create_experiment_folder(base_path: str, experiment_name: str) -> str:
+    """Create canonical experiment folder structure."""
+    path = Path(base_path) / experiment_name
+    for subdir in ("checkpoints", "figures", "tables", "results", "tensorboard"):
+        (path / subdir).mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
+def write_experiment_config(path: str, config: Mapping[str, Any]) -> str:
+    """Write resolved experiment config to YAML file."""
+    output_path = Path(path) / "config.yaml"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(dict(config), handle, sort_keys=False)
+    return str(output_path)

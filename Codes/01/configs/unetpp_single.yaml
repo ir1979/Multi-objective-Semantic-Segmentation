@@ -1,0 +1,10 @@
+inherits: default.yaml
+
+model:
+  architecture: "unetpp"
+
+loss:
+  strategy: "single"
+
+mgda:
+  enabled: false

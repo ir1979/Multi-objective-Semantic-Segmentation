@@ -1,310 +1,134 @@
-"""Loss function manager for building footprint segmentation.
+"""Central loss manager for single/weighted/MGDA strategies."""
 
-This module provides a unified interface for configuring and building
-loss functions from configuration dictionaries.
-"""
+from __future__ import annotations
 
-from typing import List, Tuple, Callable, Dict, Any
+from dataclasses import dataclass
+from typing import Dict, List, Mapping
+
 import tensorflow as tf
-from tensorflow import keras
 
-from .pixel_losses import (
-    bce, iou_loss, pixel_bce_iou, dice_loss, focal_loss, 
-    combo_loss, tversky_loss, pixel_bce_dice,
-    FocalLoss, DiceLoss, ComboLoss
-)
-from .boundary_losses import boundary_hausdorff
-from .shape_losses import shape_convexity
+from losses.boundary_losses import ApproxHausdorffLoss
+from losses.pixel_losses import BCELoss, BCEIoULoss, DiceLoss, FocalLoss, IoULoss
+from losses.shape_losses import ConvexityLoss, RegularityLoss
 
 
-# Registry of available loss functions
-LOSS_REGISTRY = {
-    # Pixel-level losses
-    'binary_crossentropy': bce,
-    'bce': bce,
-    'dice_loss': dice_loss,
-    'dice': dice_loss,
-    'iou_loss': iou_loss,
-    'iou': iou_loss,
-    'focal_loss': focal_loss,
-    'focal': focal_loss,
-    'tversky_loss': tversky_loss,
-    'tversky': tversky_loss,
-    'combo_loss': combo_loss,
-    'combo': combo_loss,
-    'pixel_bce_iou': pixel_bce_iou,
-    'bce_iou': pixel_bce_iou,
-    'bce+iou': pixel_bce_iou,
-    'pixel_bce_dice': pixel_bce_dice,
-    'bce_dice': pixel_bce_dice,
-    'bce+dice': pixel_bce_dice,
-    
-    # Boundary losses
-    'hausdorff': boundary_hausdorff,
-    'boundary_hausdorff': boundary_hausdorff,
-    
-    # Shape losses
-    'convexity': shape_convexity,
-    'shape_convexity': shape_convexity,
-}
+def _build_pixel_loss(pixel_config: Mapping[str, object]) -> tf.keras.losses.Loss:
+    loss_type = str(pixel_config.get("type", "bce_iou")).lower()
+    if loss_type == "bce":
+        return BCELoss()
+    if loss_type == "iou":
+        return IoULoss()
+    if loss_type == "dice":
+        return DiceLoss()
+    if loss_type == "bce_iou":
+        return BCEIoULoss(alpha=float(pixel_config.get("bce_iou_alpha", 0.5)))
+    if loss_type == "focal":
+        return FocalLoss()
+    raise ValueError(f"Unknown pixel loss type '{loss_type}'.")
 
 
-# Keras Loss classes for model.compile()
-KERAS_LOSS_CLASSES = {
-    'focal_loss': FocalLoss,
-    'focal': FocalLoss,
-    'dice_loss': DiceLoss,
-    'dice': DiceLoss,
-    'combo_loss': ComboLoss,
-    'combo': ComboLoss,
-}
+@dataclass
+class LossManager:
+    """Compute segmentation losses under different composition strategies."""
+
+    config: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        loss_cfg = dict(self.config.get("loss", {}))
+        self.strategy = str(loss_cfg.get("strategy", "single")).lower()
+        self.pixel_cfg = dict(loss_cfg.get("pixel", {}))
+        self.pixel_loss = _build_pixel_loss(self.pixel_cfg)
+        self.boundary_enabled = bool(loss_cfg.get("boundary", {}).get("enabled", False))
+        self.shape_enabled = bool(loss_cfg.get("shape", {}).get("enabled", False))
+        self.boundary_loss = ApproxHausdorffLoss()
+        self.shape_loss = ConvexityLoss()
+        self.shape_reg_loss = RegularityLoss()
+        self.weights = {
+            "pixel": float(self.pixel_cfg.get("weight", 1.0)),
+            "boundary": float(loss_cfg.get("boundary", {}).get("weight", 0.0)),
+            "shape": float(loss_cfg.get("shape", {}).get("weight", 0.0)),
+        }
+
+    def compute_losses(self, y_true: tf.Tensor, y_pred: tf.Tensor) -> Dict[str, tf.Tensor]:
+        """Return individual loss values."""
+        losses: Dict[str, tf.Tensor] = {
+            "pixel": self.pixel_loss(y_true, y_pred),
+        }
+        if self.boundary_enabled:
+            losses["boundary"] = self.boundary_loss(y_true, y_pred)
+        if self.shape_enabled:
+            losses["shape"] = 0.5 * self.shape_loss(y_true, y_pred) + 0.5 * self.shape_reg_loss(
+                y_true, y_pred
+            )
+        return losses
+
+    def compute_weighted_total(self, losses_dict: Mapping[str, tf.Tensor]) -> tf.Tensor:
+        """Return weighted scalar loss sum."""
+        total = tf.constant(0.0, dtype=tf.float32)
+        weight_sum = tf.constant(0.0, dtype=tf.float32)
+        for name, loss_value in losses_dict.items():
+            weight = tf.constant(self.weights.get(name, 0.0), dtype=tf.float32)
+            total += weight * tf.cast(loss_value, tf.float32)
+            weight_sum += weight
+        return tf.math.divide_no_nan(total, weight_sum)
+
+    def get_loss_names(self) -> List[str]:
+        """Return active loss component names."""
+        names = ["pixel"]
+        if self.boundary_enabled:
+            names.append("boundary")
+        if self.shape_enabled:
+            names.append("shape")
+        return names
 
 
-def get_loss_function(loss_name: str) -> Callable:
-    """Get a loss function by name.
-    
-    Parameters
-    ----------
-    loss_name : str
-        Name of the loss function
-    
-    Returns
-    -------
-    Callable
-        Loss function
-    
-    Raises
-    ------
-    ValueError
-        If loss function not found
-    """
-    loss_key = loss_name.lower().replace('_', '').replace('-', '')
-    
-    # Try direct lookup
-    if loss_name in LOSS_REGISTRY:
-        return LOSS_REGISTRY[loss_name]
-    
-    # Try normalized lookup
-    normalized_registry = {k.lower().replace('_', ''): v for k, v in LOSS_REGISTRY.items()}
-    if loss_key in normalized_registry:
-        return normalized_registry[loss_key]
-    
-    raise ValueError(f"Loss function '{loss_name}' not found. "
-                    f"Available: {list(LOSS_REGISTRY.keys())}")
-
-
-def get_keras_loss(loss_name: str, **kwargs) -> keras.losses.Loss:
-    """Get a Keras Loss class instance.
-    
-    Parameters
-    ----------
-    loss_name : str
-        Name of the loss
-    **kwargs
-        Additional arguments for loss initialization
-    
-    Returns
-    -------
-    keras.losses.Loss
-        Keras loss instance
-    """
-    loss_key = loss_name.lower().replace('_', '').replace('-', '')
-    
-    normalized_registry = {k.lower().replace('_', ''): v for k, v in KERAS_LOSS_CLASSES.items()}
-    
-    if loss_key in normalized_registry:
-        return normalized_registry[loss_key](**kwargs)
-    
-    # Fall back to function-based losses
-    loss_fn = get_loss_function(loss_name)
-    return loss_fn
-
-
-def build_losses(config: Dict[str, Any]) -> Tuple[List[Callable], List[float], List[str]]:
-    """Build a list of loss functions and their weights from configuration.
-    
-    This function supports multiple configuration formats:
-    - Simple format: pixel_loss, boundary_loss, shape_loss with weights
-    - List format: loss_functions and loss_weights
-    - Single format: just specifying loss
-    
-    Parameters
-    ----------
-    config : Dict[str, Any]
-        Configuration dictionary containing loss specifications
-    
-    Returns
-    -------
-    Tuple[List[Callable], List[float], List[str]]
-        Tuple of (loss functions, weights, loss names)
-    
-    Examples
-    --------
-    >>> config = {'pixel_loss': 'bce', 'pixel_weight': 1.0}
-    >>> losses, weights, names = build_losses(config)
-    
-    >>> config = {'loss_functions': ['bce', 'dice'], 'loss_weights': [1.0, 1.0]}
-    >>> losses, weights, names = build_losses(config)
-    """
+# Legacy helper expected by existing training code.
+def build_losses(config: Mapping[str, object]) -> tuple[list, list, list]:
+    """Return callable loss list, weights, and names (legacy API)."""
+    pixel_type = str(config.get("pixel_loss", "bce_iou")).lower()
+    if pixel_type in {"bce+iou", "bce_iou", "bceiou"}:
+        pixel_type = "bce_iou"
+    manager = LossManager(
+        {"loss": config}
+        if "strategy" in config
+        else {
+            "loss": {
+                "strategy": "weighted",
+                "pixel": {
+                    "type": pixel_type,
+                    "weight": config.get("pixel_weight", 1.0),
+                },
+                "boundary": {
+                    "enabled": config.get("boundary_loss", "none") != "none",
+                    "weight": config.get("boundary_weight", 0.3),
+                },
+                "shape": {
+                    "enabled": config.get("shape_loss", "none") != "none",
+                    "weight": config.get("shape_weight", 0.1),
+                },
+            }
+        },
+    )
+    names = manager.get_loss_names()
     losses = []
-    weights = []
-    names = []
-    
-    # Handle list format
-    if 'loss_functions' in config:
-        loss_fns = config['loss_functions']
-        loss_weights = config.get('loss_weights', [1.0] * len(loss_fns))
-        
-        if len(loss_weights) != len(loss_fns):
-            loss_weights = [1.0] * len(loss_fns)
-        
-        for loss_name, weight in zip(loss_fns, loss_weights):
-            losses.append(get_loss_function(loss_name))
-            weights.append(float(weight))
-            names.append(loss_name)
-        
-        return losses, weights, names
-    
-    # Handle simple format with individual components
-    # Pixel loss
-    pixel_loss = config.get("pixel_loss")
-    if pixel_loss:
-        losses.append(get_loss_function(pixel_loss))
-        weights.append(float(config.get("pixel_weight", 1.0)))
-        names.append(pixel_loss)
-    
-    # Boundary loss
-    boundary_loss = config.get("boundary_loss")
-    if boundary_loss and boundary_loss != "none":
-        losses.append(get_loss_function(boundary_loss))
-        weights.append(float(config.get("boundary_weight", 1.0)))
-        names.append(boundary_loss)
-    
-    # Shape loss
-    shape_loss = config.get("shape_loss")
-    if shape_loss and shape_loss != "none":
-        losses.append(get_loss_function(shape_loss))
-        weights.append(float(config.get("shape_weight", 1.0)))
-        names.append(shape_loss)
-    
-    # Validation
-    if not losses:
-        # Default to BCE if nothing specified
-        losses.append(bce)
-        weights.append(1.0)
-        names.append("bce")
-    
+    for name in names:
+        if name == "pixel":
+            losses.append(manager.pixel_loss)
+        elif name == "boundary":
+            losses.append(manager.boundary_loss)
+        elif name == "shape":
+            losses.append(lambda y_true, y_pred, _m=manager: 0.5 * _m.shape_loss(y_true, y_pred) + 0.5 * _m.shape_reg_loss(y_true, y_pred))
+    weights = [manager.weights[name] for name in names]
     return losses, weights, names
 
 
-def build_single_loss(config: Dict[str, Any]) -> Callable:
-    """Build a single combined loss function from configuration.
-    
-    This is useful when you want a single loss function to pass to
-    model.compile(), especially for multi-component losses.
-    
-    Parameters
-    ----------
-    config : Dict[str, Any]
-        Configuration dictionary
-    
-    Returns
-    -------
-    Callable
-        Combined loss function
-    
-    Examples
-    --------
-    >>> config = {'pixel_loss': 'bce', 'boundary_loss': 'hausdorff', 
-    ...           'pixel_weight': 1.0, 'boundary_weight': 0.5}
-    >>> loss_fn = build_single_loss(config)
-    >>> model.compile(optimizer='adam', loss=loss_fn)
-    """
-    losses, weights, names = build_losses(config)
-    
-    if len(losses) == 1:
-        return losses[0]
-    
-    def combined_loss(y_true, y_pred):
-        total_loss = 0.0
-        total_weight = sum(weights)
-        
-        for loss_fn, weight in zip(losses, weights):
-            loss_val = loss_fn(y_true, y_pred)
-            # Handle scalar vs tensor
-            if hasattr(loss_val, 'numpy'):
-                total_loss += weight * loss_val
-            else:
-                total_loss += weight * tf.reduce_mean(loss_val)
-        
-        return total_loss / total_weight
-    
-    return combined_loss
+def build_single_loss(config: Mapping[str, object]):
+    """Legacy adapter returning a combined scalar loss function."""
+    losses, weights, _ = build_losses(config)
 
+    def combined(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        weighted = [w * loss(y_true, y_pred) for loss, w in zip(losses, weights)]
+        denominator = tf.reduce_sum(tf.constant(weights, dtype=tf.float32))
+        return tf.math.divide_no_nan(tf.add_n(weighted), denominator)
 
-def get_loss_info(loss_name: str) -> Dict[str, Any]:
-    """Get information about a loss function.
-    
-    Parameters
-    ----------
-    loss_name : str
-        Name of the loss function
-    
-    Returns
-    -------
-    Dict[str, Any]
-        Dictionary with loss information
-    """
-    info = {
-        'name': loss_name,
-        'available': loss_name in LOSS_REGISTRY or loss_name in KERAS_LOSS_CLASSES,
-    }
-    
-    if info['available']:
-        loss_fn = get_loss_function(loss_name)
-        info['function'] = loss_fn
-        info['docstring'] = loss_fn.__doc__
-    
-    return info
-
-
-def list_available_losses() -> List[str]:
-    """List all available loss functions.
-    
-    Returns
-    -------
-    List[str]
-        List of available loss function names
-    """
-    return sorted(list(LOSS_REGISTRY.keys()))
-
-
-def validate_loss_config(config: Dict[str, Any]) -> Tuple[bool, str]:
-    """Validate a loss configuration.
-    
-    Parameters
-    ----------
-    config : Dict[str, Any]
-        Configuration to validate
-    
-    Returns
-    -------
-    Tuple[bool, str]
-        (is_valid, error_message)
-    """
-    try:
-        losses, weights, names = build_losses(config)
-        
-        if not losses:
-            return False, "No loss functions specified"
-        
-        if len(losses) != len(weights):
-            return False, "Mismatch between losses and weights"
-        
-        if any(w < 0 for w in weights):
-            return False, "Loss weights must be non-negative"
-        
-        return True, "Configuration valid"
-    
-    except Exception as e:
-        return False, str(e)
+    return combined

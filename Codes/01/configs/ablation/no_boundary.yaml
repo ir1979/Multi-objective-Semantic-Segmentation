@@ -1,0 +1,5 @@
+inherits: "../unetpp_mgda.yaml"
+
+loss:
+  boundary:
+    enabled: false

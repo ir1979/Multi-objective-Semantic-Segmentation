@@ -12,6 +12,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from utils.registry import Registry
+from .factory import get_model as get_research_model
 
 # Try to import segmentation_models
 try:
@@ -137,6 +138,26 @@ def build_model(
         enc_name = ENCODER_MAP[encoder.lower()]
     else:
         enc_name = encoder
+
+    # Route canonical research architectures to the publication-grade implementations.
+    architecture_key = architecture.lower().replace("_", "").replace("-", "")
+    if architecture_key in {"unet", "unetplusplus", "unet++", "unetpp"}:
+        resolved_arch = "unetpp" if architecture_key != "unet" else "unet"
+        model = get_research_model(
+            {
+                "model": {
+                    "architecture": resolved_arch,
+                    "encoder_filters": kwargs.get("encoder_filters", [64, 128, 256, 512, 1024]),
+                    "dropout_rate": kwargs.get("dropout_rate", 0.3),
+                    "batch_norm": kwargs.get("batch_norm", True),
+                    "activation": kwargs.get("activation", "relu"),
+                    "output_activation": activation,
+                    "deep_supervision": deep_supervision,
+                }
+            }
+        )
+        model.build((None,) + tuple(input_shape))
+        return model
     
     entry = MODEL_REGISTRY.get(architecture)
     logger.info(f"Building model: {entry.name} with encoder {enc_name}")
