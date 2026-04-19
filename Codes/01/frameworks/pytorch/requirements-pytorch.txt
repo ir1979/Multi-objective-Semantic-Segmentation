@@ -1,13 +1,11 @@
-tensorflow>=2.12,<2.16
 torch>=2.4
 torchvision>=0.19
 torchaudio>=2.4
-numpy>=1.24,<2.0
+numpy>=1.24
 pandas>=2.0
 matplotlib>=3.7
 scipy>=1.10
 scikit-learn>=1.2
-scikit-image>=0.21
 pyyaml>=6.0
 tqdm>=4.65
 opencv-python-headless>=4.7
