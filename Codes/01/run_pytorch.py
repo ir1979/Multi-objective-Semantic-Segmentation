@@ -19,9 +19,11 @@ def validate_environment() -> Tuple[bool, List[str], List[str]]:
     warnings: List[str] = []
     errors: List[str] = []
 
-    if sys.version_info < (3, 10):
+    if sys.version_info < (3, 7):
+        errors.append("Python 3.7+ is required.")
+    elif sys.version_info >= (3, 8):
         warnings.append(
-            "Python < 3.10 detected. PyTorch pipeline can run on 3.8+, but upgrade is recommended."
+            "Target environment is Python 3.7.x (tested for 3.7.16)."
         )
 
     required_packages = ["torch", "numpy", "pandas", "yaml", "PIL"]

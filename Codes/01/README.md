@@ -1,31 +1,25 @@
 # Building Segmentation with Multi-Objective Optimization
 
-Publication-oriented framework for building footprint segmentation from RGB
-satellite tiles with two parallel backends:
+This branch targets your environment:
 
-- TensorFlow (`run_all.py`)
-- PyTorch (`run_pytorch.py`)
+- Python **3.7.16**
+- TensorFlow **2.6.0** (`tensorflow-gpu` / `keras-gpu` stack)
+- Windows + Conda (`seg4`-style setup)
 
-## Quick Start
+The TensorFlow runner is the primary entrypoint:
 
-```bash
-pip install -r requirements.txt
-python run_tests.py
-python run_all.py --no-pareto
-python run_pytorch.py --config configs/pytorch_default.yaml --name pt_run
-```
+- `run_all.py` (full TensorFlow pipeline)
 
-## Windows/Conda (your environment-style setup)
+PyTorch runner remains available, but the branch is tuned first for TF2.6 compatibility.
 
-If you are on Windows + Conda similar to your provided `seg4` environment:
+## Quick Start (TF2.6 / Py3.7)
 
 ```bash
 conda activate seg4
 pip install -r requirements.txt
+python run_tests.py
+python run_all.py --no-pareto
 ```
-
-For CUDA-specific PyTorch builds, use the official wheel selector if needed:
-https://pytorch.org/get-started/locally/
 
 ## Dataset Layout
 
@@ -41,40 +35,32 @@ Matching is done by basename (`tile_001.png` <-> `tile_001.tif`).
 ```bash
 python run_all.py                                  # TensorFlow full pipeline
 python run_all.py --experiment unet_mgda           # TensorFlow single experiment
-python run_pytorch.py --config configs/pytorch_default.yaml --name pt_mgda
 python run_tests.py                                # test suite
+python run_pytorch.py --config configs/pytorch_default.yaml --name pt_mgda
 ```
 
 ## Project Structure
 
 ```
 configs/              YAML configs (TF + PyTorch variants)
-frameworks/pytorch/   PyTorch pipeline (data/models/losses/training/optimization)
 data/                 TensorFlow data pipeline
 models/               TensorFlow models
 losses/               TensorFlow losses
 optimization/         TensorFlow optimization + MGDA
 training/             TensorFlow trainer/evaluator/checkpointing
 experiments/          TensorFlow experiment orchestration
+frameworks/pytorch/   Parallel PyTorch pipeline
 visualization/        figures and LaTeX table helpers
 logging_utils/        console/file/TensorBoard/CSV/JSON logging
 tests/                unit/integration-style tests
 Misc/legacy/          relocated legacy code not used by active pipelines
 ```
 
-## PyTorch Configs
+## Compatibility Notes
 
-- `configs/pytorch_default.yaml`
-- `configs/pytorch_unet_single.yaml`
-- `configs/pytorch_unet_mgda.yaml`
-- `configs/pytorch_unetpp_mgda.yaml`
-
-## Reproducibility
-
-- TensorFlow: `utils/reproducibility.py`
-- PyTorch: `frameworks/pytorch/utils/reproducibility.py`
-
-Both pin seeds and deterministic options where supported.
+- `requirements.txt` is pinned to versions compatible with Python 3.7.16 + TF 2.6.0.
+- `setup.py` requires `>=3.7,<3.8`.
+- Runtime guards in `run_all.py` target TensorFlow 2.6.x and Python 3.7.x.
 
 ## Notes
 
