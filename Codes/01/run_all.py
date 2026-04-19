@@ -19,6 +19,8 @@ except Exception:  # pragma: no cover - exercised in dependency-missing envs
     tf = None
 
 from data.integrity import compute_dataset_hash
+from experiments.experiment_runner import ExperimentRunner
+from experiments.registry import ExperimentRegistry
 from utils.config_loader import ConfigValidationError, load_config
 from utils.reproducibility import set_global_seed
 
