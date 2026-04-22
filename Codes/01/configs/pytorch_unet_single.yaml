@@ -1,0 +1,19 @@
+inherits: "pytorch_default.yaml"
+
+model:
+  architecture: "unet"
+
+loss:
+  strategy: "single"
+  pixel:
+    type: "bce_iou"
+    weight: 1.0
+  boundary:
+    enabled: false
+    weight: 0.0
+  shape:
+    enabled: false
+    weight: 0.0
+
+mgda:
+  enabled: false

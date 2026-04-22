@@ -18,9 +18,24 @@ try:
 except Exception:  # pragma: no cover - exercised in dependency-missing envs
     tf = None
 
-from data.integrity import compute_dataset_hash
+import hashlib
 from utils.config_loader import ConfigValidationError, load_config
 from utils.reproducibility import set_global_seed
+
+
+def compute_dataset_hash(rgb_dir: str, mask_dir: str) -> str:
+    """Compute lightweight hash from filenames and sizes."""
+    hasher = hashlib.sha256()
+    for directory in sorted([Path(rgb_dir), Path(mask_dir)], key=lambda item: item.as_posix()):
+        if not directory.exists():
+            hasher.update(("missing:" + str(directory)).encode("utf-8"))
+            continue
+        for file_path in sorted(directory.glob("*")):
+            if not file_path.is_file():
+                continue
+            hasher.update(file_path.name.encode("utf-8"))
+            hasher.update(str(file_path.stat().st_size).encode("utf-8"))
+    return hasher.hexdigest()
 
 
 @dataclass
@@ -67,16 +82,26 @@ def validate_environment() -> Tuple[bool, List[str], List[str]]:
     warnings: List[str] = []
     errors: List[str] = []
 
-    if sys.version_info < (3, 10):
-        errors.append("Python 3.10+ is required.")
+    if sys.version_info < (3, 7):
+        errors.append("Python 3.7+ is required.")
+    elif sys.version_info >= (3, 8):
+        warnings.append("Target environment is Python 3.7.x (tested for 3.7.16).")
 
     if tf is None:
         errors.append("TensorFlow is not installed.")
         gpus = []
     else:
-        tf_version = tuple(int(part) for part in tf.__version__.split(".")[:2])
-        if tf_version < (2, 12):
-            errors.append(f"TensorFlow>=2.12 required, found {tf.__version__}.")
+        version_parts = []
+        for part in tf.__version__.split(".")[:2]:
+            digits = "".join(ch for ch in part if ch.isdigit())
+            version_parts.append(int(digits) if digits else 0)
+        tf_version = tuple(version_parts)
+        if tf_version < (2, 6):
+            errors.append(f"TensorFlow>=2.6 required, found {tf.__version__}.")
+        elif tf_version >= (2, 7):
+            warnings.append(
+                "Target environment is TensorFlow 2.6.x; newer versions may behave differently."
+            )
         gpus = tf.config.list_physical_devices("GPU")
     if not gpus:
         warnings.append("No GPU detected; full pipeline will be significantly slower.")
@@ -182,6 +207,9 @@ def main() -> None:
     if args.test_only:
         print("Tests completed. Exiting.")
         sys.exit(0)
+
+    from experiments.experiment_runner import ExperimentRunner
+    from experiments.registry import ExperimentRegistry
 
     runner = ExperimentRunner(config, force=args.force)
     if not args.figures_only:

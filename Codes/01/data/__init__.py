@@ -1,6 +1,10 @@
 """Data package for building segmentation experiments."""
 
-from .dataset import BuildingDataset
+try:
+    from .dataset import BuildingDataset
+except Exception:  # pragma: no cover - allows environment checks without TF installed
+    BuildingDataset = None
+
 from .loader import BuildingSegmentationDataset, DatasetConfig
 from .splitter import StratifiedSplitter
 from .integrity import compute_dataset_hash

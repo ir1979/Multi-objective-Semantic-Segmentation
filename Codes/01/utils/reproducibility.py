@@ -8,7 +8,11 @@ import random
 from pathlib import Path
 
 import numpy as np
-import tensorflow as tf
+
+try:
+    import tensorflow as tf
+except Exception:  # pragma: no cover - allows environment checks without TF
+    tf = None
 
 
 def set_global_seed(seed: int = 42) -> None:
@@ -23,12 +27,13 @@ def set_global_seed(seed: int = 42) -> None:
     os.environ["TF_DETERMINISTIC_OPS"] = "1"
     random.seed(seed)
     np.random.seed(seed)
-    tf.random.set_seed(seed)
-    try:
-        tf.config.experimental.enable_op_determinism()
-    except Exception:
-        # Some TF builds do not expose deterministic kernels for every platform.
-        pass
+    if tf is not None:
+        tf.random.set_seed(seed)
+        try:
+            tf.config.experimental.enable_op_determinism()
+        except Exception:
+            # Some TF builds do not expose deterministic kernels for every platform.
+            pass
 
 
 def compute_dataset_hash(data_dir: str) -> str:

@@ -1,0 +1,8 @@
+inherits: "pytorch_default.yaml"
+model:
+  architecture: "unetpp"
+  deep_supervision: false
+loss:
+  strategy: "mgda"
+mgda:
+  enabled: true

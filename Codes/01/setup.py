@@ -1,7 +1,9 @@
+from typing import List
+
 from setuptools import find_packages, setup
 
 
-def _read_requirements() -> list[str]:
+def _read_requirements() -> List[str]:
     requirements_path = "requirements.txt"
     with open(requirements_path, "r", encoding="utf-8") as handle:
         return [
@@ -16,6 +18,6 @@ setup(
     version="1.0.0",
     description="Multi-objective optimization for building segmentation.",
     packages=find_packages(),
-    python_requires=">=3.10",
+    python_requires=">=3.7,<3.8",
     install_requires=_read_requirements(),
 )
