@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+import gc
 
 import numpy as np
 import json
@@ -40,29 +41,38 @@ class TestTraining(unittest.TestCase):
     """Ensure short training runs execute correctly."""
 
     def setUp(self) -> None:
+        tf.keras.backend.clear_session()
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.rgb_dir = root / "RGB"
         self.mask_dir = root / "Mask"
+        self.image_size = 128
         self.rgb_dir.mkdir(parents=True, exist_ok=True)
         self.mask_dir.mkdir(parents=True, exist_ok=True)
         for idx in range(18):
-            _write_rgb(self.rgb_dir / f"tile_{idx:03d}.png", seed=idx)
-            _write_mask(self.mask_dir / f"tile_{idx:03d}.tif", seed=idx)
+            image = (np.random.default_rng(idx).random((self.image_size, self.image_size, 3)) * 255).astype(np.uint8)
+            mask = (np.random.default_rng(idx).random((self.image_size, self.image_size)) > 0.8).astype(np.uint8) * 255
+            Image.fromarray(image).save(self.rgb_dir / f"tile_{idx:03d}.png")
+            Image.fromarray(mask).save(self.mask_dir / f"tile_{idx:03d}.tif")
 
         self.base_config = {
             "project": {"seed": 42},
             "data": {
                 "rgb_dir": str(self.rgb_dir),
                 "mask_dir": str(self.mask_dir),
-                "image_size": 256,
-                "batch_size": 2,
+                "image_size": self.image_size,
+                "batch_size": 1,
                 "train_ratio": 0.7,
                 "val_ratio": 0.15,
                 "test_ratio": 0.15,
                 "building_density_bins": 3,
             },
-            "model": {"architecture": "unet", "deep_supervision": False},
+            "model": {
+                "architecture": "unet",
+                "deep_supervision": False,
+                "encoder_filters": [16, 32, 64, 128, 256],
+                "dropout_rate": 0.1,
+            },
             "loss": {
                 "strategy": "single",
                 "pixel": {"type": "bce_iou", "weight": 1.0},
@@ -80,14 +90,16 @@ class TestTraining(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+        tf.keras.backend.clear_session()
+        gc.collect()
 
     def _build_datasets(self):
         loader = BuildingSegmentationDataset(
             DatasetConfig(
                 rgb_dir=str(self.rgb_dir),
                 mask_dir=str(self.mask_dir),
-                image_size=256,
-                batch_size=2,
+                image_size=self.image_size,
+                batch_size=1,
                 seed=42,
             ),
             skipped_log_path=str(Path(self.tmp.name) / "skipped.txt"),

@@ -3,15 +3,9 @@
 
 # In[ ]:
 
-from tensorflow import keras
-from keras.applications.vgg19 import VGG19
-from keras.layers import Conv2D, Conv2DTranspose, Dropout, Activation, BatchNormalization, UpSampling2D, Input, Reshape, Concatenate
-from keras.models import Model
-from tensorflow.keras.optimizers import Adam
-from keras.metrics import Precision
-from keras.metrics import MeanIoU
-import os
 import numpy as np
+from tensorflow.keras.layers import Activation, BatchNormalization, Concatenate, Conv2D, Input, MaxPooling2D, UpSampling2D
+from tensorflow.keras.models import Model
 
 
 np.random.seed(101)
@@ -61,4 +55,3 @@ def NestedUNet():
     model.summary()
 
     return model
-

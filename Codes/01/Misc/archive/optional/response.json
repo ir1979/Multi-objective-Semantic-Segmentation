@@ -1,0 +1,1 @@
+{"error":{"message":"json: cannot unmarshal string into Go struct field ***.contents of type []***.GeminiChatContent (request id: 2026042217382026543986z2ou7Mci)","type":"gap_api_error","param":"","code":"invalid_request"}}

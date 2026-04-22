@@ -1,9 +1,6 @@
 import numpy as np
-import tensorflow as tf
+from tensorflow import keras as k
 from tensorflow.keras import layers
-from keras.layers import Activation, BatchNormalization, Conv2D, Dropout, Input, MaxPooling2D, Reshape, UpSampling2D, concatenate
-from keras.models import Model
-from tensorflow.keras.layers import SpatialDropout2D
 
 np.random.seed(101)
 
@@ -152,4 +149,5 @@ def unet3plus(epochs_num):
     d = conv_block(d1, output_channels, n=1, is_bn=False, is_relu=False)
 
     output = k.activations.sigmoid(d)
+    model = k.Model(inputs=input_layer, outputs=output, name="UNet3Plus")
     return model

@@ -249,10 +249,10 @@ class Trainer:
                         mgda_history.append(alpha_payload)
                 else:
                     batch_metrics = self._weighted_train_step(x_batch, y_batch)
-                    train_values["loss"].append(float(batch_metrics["loss"].numpy()))
-                    train_values["pixel"].append(float(batch_metrics.get("pixel", 0.0).numpy()))
-                    train_values["boundary"].append(float(batch_metrics.get("boundary", 0.0).numpy()))
-                    train_values["shape"].append(float(batch_metrics.get("shape", 0.0).numpy()))
+                    train_values["loss"].append(float(batch_metrics["loss"]))
+                    train_values["pixel"].append(float(batch_metrics.get("pixel", 0.0)))
+                    train_values["boundary"].append(float(batch_metrics.get("boundary", 0.0)))
+                    train_values["shape"].append(float(batch_metrics.get("shape", 0.0)))
 
             val_values: Dict[str, list] = {
                 "loss": [],
@@ -265,7 +265,7 @@ class Trainer:
             for x_batch, y_batch in val_dataset:
                 metrics = self._eval_step(x_batch, y_batch)
                 for key in val_values:
-                    val_values[key].append(float(metrics[key].numpy()))
+                    val_values[key].append(float(metrics[key]))
 
             train_agg = self._aggregate(train_values)
             val_agg = self._aggregate(val_values)
@@ -359,6 +359,7 @@ class Trainer:
         )
         self._save_history(result)
         self.tensorboard_logger.close()
+        self.dual_logger.close()
         return result
 
     def _save_history(self, result: TrainingResult) -> None:

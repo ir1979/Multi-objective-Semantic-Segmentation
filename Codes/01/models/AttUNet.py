@@ -5,13 +5,9 @@
 
 
 import numpy as np
-import pandas as pd
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, Activation, UpSampling2D, MaxPooling2D, Concatenate, multiply, add
-from keras.metrics import MeanIoU
-from tensorflow.keras.optimizers import Adam
-from keras.metrics import Precision
-import os
+
 np.random.seed(101)
 
 def conv_block(input, filters):
@@ -92,5 +88,4 @@ def AttUNet():
 
     model.summary()
 
-    return model, hist
-
+    return model

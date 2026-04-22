@@ -44,6 +44,7 @@ class TestCheckpointing(unittest.TestCase):
                 metrics={"val_iou": 0.7, "val_boundary": 0.2},
                 mgda_solver=solver,
             )
+            self.assertTrue((Path(tmpdir) / "last_epoch.weights.h5").exists())
             self.assertTrue((Path(tmpdir) / "last_epoch.h5").exists())
             self.assertTrue((Path(tmpdir) / "training_state.pkl").exists())
 
@@ -52,7 +53,14 @@ class TestCheckpointing(unittest.TestCase):
             self.assertIsNotNone(state)
             self.assertEqual(int(state["epoch"]), 3)
 
-            restored = tf.keras.models.load_model(model_path, compile=False)
+            restored = tf.keras.Sequential(
+                [
+                    tf.keras.layers.Input(shape=(8,)),
+                    tf.keras.layers.Dense(4, activation="relu"),
+                    tf.keras.layers.Dense(1, activation="sigmoid"),
+                ]
+            )
+            restored.load_weights(model_path)
             self.assertEqual(len(restored.weights), len(model.weights))
             self.assertTrue(isinstance(state.get("optimizer_weights"), list))
             self.assertTrue(isinstance(state.get("mgda_alpha_history"), list))

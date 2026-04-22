@@ -5,13 +5,9 @@
 
 
 import numpy as np
-import pandas as pd
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, Activation, UpSampling2D, MaxPooling2D, Concatenate, multiply, add
-from tensorflow.keras.optimizers import Adam
-from keras.metrics import Precision
-from keras.metrics import MeanIoU
-import os
+
 np.random.seed(101)
 
 
@@ -116,4 +112,3 @@ def R2AttUNet():
     model.summary()
 
     return model
-

@@ -4,16 +4,23 @@
 # In[ ]:
 
 
-import keras.backend as K
-from keras.models import Model
-from keras.layers import Input, Activation, Conv2D, DepthwiseConv2D, Conv2DTranspose, ZeroPadding2D
-from keras.layers import BatchNormalization,Add
-from tensorflow.keras.optimizers import Adam
-import pandas as pd
-from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, Activation, UpSampling2D, MaxPooling2D, Concatenate, Multiply, add,Lambda
-from keras.metrics import Precision
-from keras.metrics import MeanIoU
-import os
+import numpy as np
+from tensorflow.keras import backend as K
+from tensorflow.keras.layers import (
+    Activation,
+    Add,
+    BatchNormalization,
+    Concatenate,
+    Conv2D,
+    Dense,
+    Input,
+    Lambda,
+    MaxPooling2D,
+    Multiply,
+    UpSampling2D,
+)
+from tensorflow.keras.models import Model
+
 np.random.seed(101)
 
 def cse_block(prevlayer, prefix):
@@ -141,7 +148,7 @@ def scSEUnet():
                                                                     2))(conv5))
     up6 = BatchNormalization()(up6)
 
-    merge6 = concatenate([conv4, up6], axis=3)
+    merge6 = Concatenate(axis=3)([conv4, up6])
     conv6 = Conv2D(128,
                    3,
                    activation='relu',
@@ -164,7 +171,7 @@ def scSEUnet():
                                                                     2))(conv6))
     up7 = BatchNormalization()(up7)
 
-    merge7 = concatenate([conv3, up7], axis=3)
+    merge7 = Concatenate(axis=3)([conv3, up7])
     conv7 = Conv2D(64,
                    3,
                    activation='relu',
@@ -189,7 +196,7 @@ def scSEUnet():
                                                                     2))(conv7))
     up8 = BatchNormalization()(up8)
 
-    merge8 = concatenate([conv2, up8], axis=3)
+    merge8 = Concatenate(axis=3)([conv2, up8])
     conv8 = Conv2D(32,
                    3,
                    activation='relu',
@@ -214,7 +221,7 @@ def scSEUnet():
                                                                     2))(conv8))
     up9 = BatchNormalization()(up9)
 
-    merge9 = concatenate([conv1, up9], axis=3)
+    merge9 = Concatenate(axis=3)([conv1, up9])
     conv9 = Conv2D(16,
                    3,
                    activation='relu',
@@ -238,4 +245,3 @@ def scSEUnet():
     model.summary()
     
     return model
-

@@ -72,3 +72,9 @@ class DualLogger:
 
     def log_config(self, config_dict: Dict[str, object]) -> None:
         self.info(f"Resolved config: {config_dict}")
+
+    def close(self) -> None:
+        """Close all logging handlers to release file locks."""
+        for handler in self.logger.handlers[:]:
+            handler.close()
+            self.logger.removeHandler(handler)

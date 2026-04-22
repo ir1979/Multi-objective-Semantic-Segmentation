@@ -183,6 +183,8 @@ def main() -> None:
         print("Tests completed. Exiting.")
         sys.exit(0)
 
+    from experiments import ExperimentRegistry, ExperimentRunner
+
     runner = ExperimentRunner(config, force=args.force)
     if not args.figures_only:
         if args.experiment:

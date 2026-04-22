@@ -5,17 +5,9 @@
 
 
 import numpy as np
-import tensorflow as tf
-import keras.backend as K
-from keras.models import Model
-from keras.layers import Input, Activation, Conv2D, DepthwiseConv2D, Conv2DTranspose, ZeroPadding2D
-from keras.layers import BatchNormalization,Add
-from tensorflow.keras.optimizers import Adam
-import pandas as pd
-from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, Activation, UpSampling2D, MaxPooling2D, Concatenate, Multiply, add,Lambda, GlobalAveragePooling2D
-from keras.metrics import Precision
-from keras.metrics import MeanIoU
-import os
+from tensorflow.keras.layers import Activation, Add, BatchNormalization, Concatenate, Conv2D, Conv2DTranspose, Input, MaxPooling2D
+from tensorflow.keras.models import Model
+
 np.random.seed(101)
 
 def ResUnet():
