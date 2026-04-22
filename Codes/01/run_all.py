@@ -21,6 +21,7 @@ except Exception:  # pragma: no cover - exercised in dependency-missing envs
 from data.integrity import compute_dataset_hash
 from utils.config_loader import ConfigValidationError, load_config
 from utils.reproducibility import set_global_seed
+from utils.test_reporting import run_suite_with_logging
 
 
 @dataclass
@@ -38,23 +39,14 @@ def run_test_suite(quick: bool = False) -> TestResult:
 
     loader = unittest.TestLoader()
     suite = loader.discover("tests", pattern="test_*.py")
-    runner = unittest.TextTestRunner(verbosity=2 if not quick else 1)
-    result = runner.run(suite)
-
-    report_path = Path("results/test_report.txt")
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(
-        "\n".join(
-            [
-                f"tests_run={result.testsRun}",
-                f"failures={len(result.failures)}",
-                f"errors={len(result.errors)}",
-                f"was_successful={result.wasSuccessful()}",
-            ]
-        ),
-        encoding="utf-8",
+    result, report_path, detail_path = run_suite_with_logging(
+        suite,
+        report_dir="results",
+        verbosity=2 if not quick else 1,
     )
     failed = len(result.failures) + len(result.errors)
+    print(f"Test summary written to {report_path}")
+    print(f"Detailed test log written to {detail_path}")
     return TestResult(
         total=result.testsRun,
         failed=failed,

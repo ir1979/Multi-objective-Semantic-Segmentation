@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 import sys
 import unittest
-from pathlib import Path
+
+from utils.test_reporting import run_suite_with_logging
 
 
 def _select_pattern(args: argparse.Namespace) -> str:
@@ -31,21 +32,9 @@ def main() -> None:
         suite = unittest.TestSuite(
             [test for index, test in enumerate(suite) if index < 5]
         )
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
-
-    report_path = Path("results/test_report.txt")
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(
-        "\n".join(
-            [
-                f"tests_run={result.testsRun}",
-                f"failures={len(result.failures)}",
-                f"errors={len(result.errors)}",
-                f"was_successful={result.wasSuccessful()}",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    result, report_path, detail_path = run_suite_with_logging(suite, report_dir="results", verbosity=2)
+    print(f"Test summary written to {report_path}")
+    print(f"Detailed test log written to {detail_path}")
     sys.exit(0 if result.wasSuccessful() else 1)
 
 
