@@ -18,10 +18,13 @@ class DualLogger:
     ) -> None:
         self.log_file = Path(log_file)
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
-        self.logger = logging.getLogger(f"building_segmentation.{self.log_file.stem}")
+        logger_name = f"building_segmentation.{self.log_file.resolve().as_posix()}"
+        self.logger = logging.getLogger(logger_name)
         self.logger.setLevel(logging.DEBUG)
         self.logger.propagate = False
-        self.logger.handlers.clear()
+        for handler in self.logger.handlers[:]:
+            handler.close()
+            self.logger.removeHandler(handler)
 
         console_handler = logging.StreamHandler()
         console_handler.setLevel(getattr(logging, console_level.upper(), logging.INFO))
@@ -50,6 +53,14 @@ class DualLogger:
 
     def error(self, msg: str) -> None:
         self.logger.error(msg)
+
+    def exception(self, msg: str) -> None:
+        self.logger.exception(msg)
+
+    def log_exception_context(self, heading: str, **context: object) -> None:
+        """Log an exception-friendly payload with structured context."""
+        payload = ", ".join(f"{key}={value}" for key, value in context.items())
+        self.logger.error("%s | %s", heading, payload if payload else "no-context")
 
     def log_epoch_summary(
         self,

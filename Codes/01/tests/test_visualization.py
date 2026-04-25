@@ -12,6 +12,7 @@ from PIL import Image
 
 from data.loader import BuildingSegmentationDataset, DatasetConfig
 from data.splitter import StratifiedSplitter
+from experiments.pareto_experiment import ParetoExperiment
 from models.unet import UNet
 from visualization.boundary_overlay import generate_boundary_overlay
 from visualization.complexity_plot import generate_complexity_plot
@@ -134,3 +135,21 @@ class TestVisualization(unittest.TestCase):
         )
         self.assertIn("\\begin{tabular}", latex)
         self.assertTrue((self.root / "table.tex").exists())
+
+    def test_pareto_experiment_save_outputs_uses_objective_columns(self) -> None:
+        experiment = ParetoExperiment(self.root / "pareto_tables")
+        results = pd.DataFrame(
+            {
+                "pixel_weight": [0.6, 0.8],
+                "boundary_weight": [0.2, 0.1],
+                "shape_weight": [0.1, 0.2],
+                "iou": [0.75, 0.70],
+                "hausdorff": [0.2, 0.25],
+                "convexity": [0.9, 0.85],
+            }
+        )
+        front = experiment.compute_pareto_front(results)
+        experiment.save_outputs(results, front)
+        saved = pd.read_csv(self.root / "pareto_tables" / "pareto_points.csv")
+        self.assertIn("obj_iou", saved.columns)
+        self.assertTrue((self.root / "pareto_tables" / "pareto_2d.png").exists())

@@ -1,4 +1,4 @@
-tensorflow>=2.12,<2.16
+tensorflow>=2.10
 numpy>=1.24,<2.0
 pandas>=2.0
 matplotlib>=3.7
@@ -8,5 +8,5 @@ scikit-image>=0.21
 pyyaml>=6.0
 tqdm>=4.65
 opencv-python-headless>=4.7
-tensorboard>=2.12
+tensorboard>=2.10
 Pillow>=9.5

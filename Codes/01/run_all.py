@@ -9,6 +9,7 @@ import platform
 import shutil
 import sys
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -67,8 +68,8 @@ def validate_environment() -> Tuple[bool, List[str], List[str]]:
         gpus = []
     else:
         tf_version = tuple(int(part) for part in tf.__version__.split(".")[:2])
-        if tf_version < (2, 12):
-            errors.append(f"TensorFlow>=2.12 required, found {tf.__version__}.")
+        if tf_version < (2, 10):
+            errors.append(f"TensorFlow>=2.10 required, found {tf.__version__}.")
         gpus = tf.config.list_physical_devices("GPU")
     if not gpus:
         warnings.append("No GPU detected; full pipeline will be significantly slower.")
@@ -178,15 +179,23 @@ def main() -> None:
     from experiments import ExperimentRegistry, ExperimentRunner
 
     runner = ExperimentRunner(config, force=args.force)
-    if not args.figures_only:
-        if args.experiment:
-            runner.run_single(args.experiment)
-        elif args.no_pareto:
-            runner.run_subset([name for name in runner.get_all_experiments() if name != "pareto_sweep"])
-        else:
-            runner.run_all()
+    try:
+        if not args.figures_only:
+            if args.experiment:
+                runner.run_single(args.experiment)
+            elif args.no_pareto:
+                runner.run_subset([name for name in runner.get_all_experiments() if name != "pareto_sweep"])
+            else:
+                runner.run_all()
 
-    runner.generate_paper_outputs()
+        runner.generate_paper_outputs()
+    except Exception as exc:  # pragma: no cover - safety net for production runs
+        error_log = Path(config.get("export", {}).get("results_dir", "results")) / "pipeline_error.log"
+        error_log.parent.mkdir(parents=True, exist_ok=True)
+        error_log.write_text(traceback.format_exc(), encoding="utf-8")
+        print(f"CRITICAL: Pipeline failed with {exc.__class__.__name__}: {exc}")
+        print(f"Detailed traceback written to {error_log}")
+        sys.exit(4)
 
     elapsed = time.time() - start_time
     registry = ExperimentRegistry(Path(config.get("export", {}).get("results_dir", "results")) / "experiment_registry.json")

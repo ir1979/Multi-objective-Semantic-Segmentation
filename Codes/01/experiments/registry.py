@@ -32,6 +32,8 @@ class ExperimentRegistry:
                 "completed_at": "",
                 "test_iou": 0.0,
                 "error_message": None,
+                "failure_log": "",
+                "resume_count": 0,
             },
         )
         self.save()

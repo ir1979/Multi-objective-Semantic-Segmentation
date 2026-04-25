@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ from experiments.comparison import ModelComparisonExperiment
 from experiments.pareto_experiment import ParetoExperiment
 from experiments.registry import ExperimentRegistry
 from logging_utils.json_summary import JSONSummary
+from logging_utils.logger import DualLogger
 from logging_utils.system_info import capture_system_info
 from models.complexity import ModelComplexityAnalyzer
 from models.factory import get_model
@@ -62,6 +64,36 @@ class ExperimentRunner:
 
     def get_all_experiments(self) -> List[str]:
         return list(self.experiments.keys())
+
+    def _resolve_run_dir(self, experiment_name: str) -> tuple[Path, bool]:
+        record = self.registry.load().get(experiment_name, {})
+        checkpoint_cfg = dict(self.config.get("checkpointing", {}))
+        auto_resume = bool(checkpoint_cfg.get("auto_resume", False))
+        if self.force or not auto_resume:
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            return self.results_root / f"{experiment_name}_{timestamp}", False
+
+        existing = Path(str(record.get("results_path", ""))) if record.get("results_path") else None
+        if existing and existing.exists():
+            checkpoint_dir = existing / "checkpoints"
+            if record.get("status") in {"running", "failed"} and checkpoint_dir.exists():
+                return existing, True
+
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        return self.results_root / f"{experiment_name}_{timestamp}", False
+
+    @staticmethod
+    def _write_failure_artifacts(run_dir: Path, exc: Exception) -> Path:
+        failure_log = run_dir / "failure.log"
+        failure_payload = {
+            "error_type": exc.__class__.__name__,
+            "error_message": str(exc),
+            "traceback": traceback.format_exc(),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        failure_log.write_text(failure_payload["traceback"], encoding="utf-8")
+        JSONSummary(run_dir / "failure.json").save(failure_payload)
+        return failure_log
 
     def _build_dataset(self, run_dir: Path):
         data_cfg = dict(self.config.get("data", {}))
@@ -123,25 +155,32 @@ class ExperimentRunner:
         if record.get("status") == "completed" and not self.force:
             return
 
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        run_dir = self.results_root / f"{experiment_name}_{timestamp}"
+        run_dir, resuming = self._resolve_run_dir(experiment_name)
         run_dir.mkdir(parents=True, exist_ok=True)
+        logger = DualLogger(run_dir / "run.log")
         self.registry.register(experiment_name, config_path=f"configs/{experiment_name}.yaml")
-        self.registry.update_status(experiment_name, "running", results_path=str(run_dir))
-
-        if exp_cfg.get("special") == "pareto":
-            self._run_pareto_sweep(experiment_name, run_dir)
-            return
-
-        resolved = self._override_config(self.config, exp_cfg)
-        save_resolved_config(resolved, str(run_dir / "config.yaml"))
-
-        loader, split, train_ds, val_ds, test_ds = self._build_dataset(run_dir)
-        model = get_model(resolved)
-        checkpoint_manager = CheckpointManager(run_dir / "checkpoints")
-        trainer = Trainer(model, resolved, run_dir, checkpoint_manager)
-
         try:
+            self.registry.update_status(
+                experiment_name,
+                "running",
+                results_path=str(run_dir),
+                resume_count=int(record.get("resume_count", 0)) + (1 if resuming else 0),
+                error_message=None,
+                failure_log="",
+            )
+            logger.info(f"Starting experiment {experiment_name} in {run_dir} (resume={resuming})")
+            if exp_cfg.get("special") == "pareto":
+                self._run_pareto_sweep(experiment_name, run_dir)
+                logger.info(f"Completed special experiment {experiment_name}")
+                return
+
+            resolved = self._override_config(self.config, exp_cfg)
+            save_resolved_config(resolved, str(run_dir / "config.yaml"))
+
+            loader, split, train_ds, val_ds, test_ds = self._build_dataset(run_dir)
+            model = get_model(resolved)
+            checkpoint_manager = CheckpointManager(run_dir / "checkpoints")
+            trainer = Trainer(model, resolved, run_dir, checkpoint_manager)
             training_result = trainer.fit(train_ds, val_ds)
             test_metrics = self.evaluator.evaluate(model, test_ds)
             complexity = ModelComplexityAnalyzer(
@@ -183,8 +222,19 @@ class ExperimentRunner:
                 test_iou=float(test_metrics.get("iou", 0.0)),
                 results_path=str(run_dir),
             )
+            logger.info(f"Completed experiment {experiment_name} with test_iou={float(test_metrics.get('iou', 0.0)):.4f}")
         except Exception as exc:  # pylint: disable=broad-except
-            self.registry.update_status(experiment_name, "failed", error_message=str(exc), results_path=str(run_dir))
+            failure_log = self._write_failure_artifacts(run_dir, exc)
+            logger.exception(f"Experiment {experiment_name} failed")
+            self.registry.update_status(
+                experiment_name,
+                "failed",
+                error_message=str(exc),
+                results_path=str(run_dir),
+                failure_log=str(failure_log),
+            )
+        finally:
+            logger.close()
 
     def _run_pareto_sweep(self, experiment_name: str, run_dir: Path) -> None:
         resolved = self._override_config(self.config, {"model": "unetpp", "strategy": "weighted"})
@@ -224,8 +274,14 @@ class ExperimentRunner:
             self.run_single(name)
 
     def run_all(self) -> None:
+        failures: Dict[str, str] = {}
         for name in self.get_all_experiments():
             self.run_single(name)
+            status = self.registry.load().get(name, {})
+            if status.get("status") == "failed":
+                failures[name] = str(status.get("error_message", "unknown"))
+        if failures:
+            JSONSummary(self.results_root / "pipeline_failures.json").save(failures)
 
     def get_status(self) -> Dict[str, str]:
         payload = self.registry.load()

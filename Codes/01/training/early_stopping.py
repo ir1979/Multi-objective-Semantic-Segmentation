@@ -53,3 +53,25 @@ class MultiMetricEarlyStopping:
     def get_best_metrics(self) -> Dict[str, float]:
         """Return metrics snapshot captured at best epoch."""
         return dict(self._best_metrics)
+
+    def state_dict(self) -> Dict[str, float | int | Dict[str, float]]:
+        """Serialize early-stopping state for checkpoint resume."""
+        return {
+            "monitor": self.monitor,
+            "patience": self.patience,
+            "mode": self.mode,
+            "min_delta": self.min_delta,
+            "best_value": self.best_value,
+            "best_epoch": self.best_epoch,
+            "wait_count": self.wait_count,
+            "epoch": self._epoch,
+            "best_metrics": dict(self._best_metrics),
+        }
+
+    def load_state_dict(self, state: Dict[str, float | int | Dict[str, float]]) -> None:
+        """Restore serialized early-stopping state."""
+        self.best_value = float(state.get("best_value", self.best_value))
+        self.best_epoch = int(state.get("best_epoch", self.best_epoch))
+        self.wait_count = int(state.get("wait_count", self.wait_count))
+        self._epoch = int(state.get("epoch", self._epoch))
+        self._best_metrics = dict(state.get("best_metrics", self._best_metrics))

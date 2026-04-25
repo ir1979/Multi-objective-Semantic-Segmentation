@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Mapping
+from typing import Any, Dict, Mapping
 
 import numpy as np
 import tensorflow as tf
@@ -88,6 +89,8 @@ class TrainingResult:
     stopped_early: bool = False
     total_time_seconds: float = 0.0
     mgda_alpha_history: list = field(default_factory=list)
+    resumed_from_checkpoint: bool = False
+    start_epoch: int = 0
 
 
 class Trainer:
@@ -160,6 +163,66 @@ class Trainer:
             interval=int(log_cfg.get("validation_image_interval", 5)),
         )
 
+    def _load_history(self) -> Dict[str, list]:
+        history = {
+            "train_loss": [],
+            "val_loss": [],
+            "val_iou": [],
+            "val_dice": [],
+            "lr": [],
+        }
+        csv_history = self.csv_logger.load()
+        if csv_history.empty:
+            return history
+        column_map = {
+            "train_loss": "train_loss",
+            "val_loss": "val_loss",
+            "val_iou": "val_iou",
+            "val_dice": "val_dice",
+            "lr": "learning_rate",
+        }
+        for key, column in column_map.items():
+            if column in csv_history.columns:
+                history[key] = [float(v) for v in csv_history[column].tolist()]
+        return history
+
+    def _restore_training_state(self) -> tuple[int, Dict[str, list], bool]:
+        checkpoint_cfg = dict(self.config.get("checkpointing", {}))
+        auto_resume = bool(checkpoint_cfg.get("auto_resume", False))
+        if not auto_resume:
+            return 0, self._load_history(), False
+
+        model_path, state = self.checkpoint_manager.load_latest()
+        history = self._load_history()
+        if model_path is None or state is None:
+            return 0, history, False
+
+        self._ensure_model_built()
+        self.model.load_weights(model_path)
+        restored_optimizer = self.checkpoint_manager.restore_optimizer_state(self.optimizer, state, self.model)
+        extra_state = dict(state.get("extra_state", {}))
+        if extra_state.get("plateau_scheduler"):
+            self.plateau_scheduler.load_state_dict(dict(extra_state["plateau_scheduler"]))
+        if extra_state.get("early_stopping"):
+            self.early_stopping.load_state_dict(dict(extra_state["early_stopping"]))
+        if self.strategy == "mgda" and state.get("mgda_alpha_history"):
+            self.mgda_solver.alpha_history = list(state["mgda_alpha_history"])
+
+        start_epoch = int(state.get("epoch", 0))
+        self.dual_logger.info(
+            f"Resuming training from epoch {start_epoch + 1} "
+            f"(optimizer_restored={restored_optimizer}, checkpoint={model_path})"
+        )
+        return start_epoch, history, True
+
+    def _ensure_model_built(self) -> None:
+        """Build subclassed models before loading weights from checkpoint."""
+        if self.model.built:
+            return
+        image_size = int(self.config.get("data", {}).get("image_size", 256))
+        dummy = tf.zeros((1, image_size, image_size, 3), dtype=tf.float32)
+        _ = self.model(dummy, training=False)
+
     @tf.function
     def _weighted_train_step(self, x_batch: tf.Tensor, y_batch: tf.Tensor) -> Dict[str, tf.Tensor]:
         with tf.GradientTape() as tape:
@@ -208,6 +271,7 @@ class Trainer:
         """Train the configured model and return history."""
         train_cfg = dict(self.config.get("training", {}))
         epochs = int(train_cfg.get("epochs", 100))
+        resumed_from_checkpoint = False
         history: Dict[str, list] = {
             "train_loss": [],
             "val_loss": [],
@@ -220,147 +284,186 @@ class Trainer:
         best_epoch = start_epoch
         mgda_history = []
         should_stop = False
+        current_epoch = start_epoch
 
         try:
+            if start_epoch == 0:
+                start_epoch, history, resumed_from_checkpoint = self._restore_training_state()
+            else:
+                history = self._load_history()
+            if not any(history.values()):
+                history = {
+                    "train_loss": [],
+                    "val_loss": [],
+                    "val_iou": [],
+                    "val_dice": [],
+                    "lr": [],
+                }
+            best_metric = max(history["val_iou"]) if history["val_iou"] else -float("inf")
+            best_epoch = int(np.argmax(history["val_iou"])) + 1 if history["val_iou"] else start_epoch
+            mgda_history = list(self.mgda_solver.get_alpha_history()) if self.strategy == "mgda" else []
+
             self.validation_image_logger.sample_batch = next(iter(val_dataset.take(1)))
         except Exception:
             self.validation_image_logger.sample_batch = None
 
-        for epoch in range(start_epoch, epochs):
-            epoch_start = time.time()
-            current_lr = self._set_lr(epoch)
-            train_values: Dict[str, list] = {"loss": [], "pixel": [], "boundary": [], "shape": []}
+        try:
+            for epoch in range(start_epoch, epochs):
+                current_epoch = epoch
+                epoch_start = time.time()
+                current_lr = self._set_lr(epoch)
+                train_values: Dict[str, list] = {"loss": [], "pixel": [], "boundary": [], "shape": []}
 
-            for x_batch, y_batch in train_dataset:
-                if self.strategy == "mgda":
-                    loss_functions = {"pixel": self.loss_manager.pixel_loss}
-                    if self.loss_manager.boundary_enabled:
-                        loss_functions["boundary"] = self.loss_manager.boundary_loss
-                    if self.loss_manager.shape_enabled:
-                        loss_functions["shape"] = self.loss_manager.shape_loss
-                    mgda_metrics = self.mgda_stepper.step(x_batch, y_batch, loss_functions)
-                    batch_loss = np.mean([v for k, v in mgda_metrics.items() if not k.startswith("alpha_")])
-                    train_values["loss"].append(float(batch_loss))
-                    train_values["pixel"].append(float(mgda_metrics.get("pixel", 0.0)))
-                    train_values["boundary"].append(float(mgda_metrics.get("boundary", 0.0)))
-                    train_values["shape"].append(float(mgda_metrics.get("shape", 0.0)))
-                    alpha_payload = {k: v for k, v in mgda_metrics.items() if k.startswith("alpha_")}
-                    if alpha_payload:
-                        mgda_history.append(alpha_payload)
-                else:
-                    batch_metrics = self._weighted_train_step(x_batch, y_batch)
-                    train_values["loss"].append(float(batch_metrics["loss"]))
-                    train_values["pixel"].append(float(batch_metrics.get("pixel", 0.0)))
-                    train_values["boundary"].append(float(batch_metrics.get("boundary", 0.0)))
-                    train_values["shape"].append(float(batch_metrics.get("shape", 0.0)))
+                for x_batch, y_batch in train_dataset:
+                    if self.strategy == "mgda":
+                        loss_functions = {"pixel": self.loss_manager.pixel_loss}
+                        if self.loss_manager.boundary_enabled:
+                            loss_functions["boundary"] = self.loss_manager.boundary_loss
+                        if self.loss_manager.shape_enabled:
+                            loss_functions["shape"] = self.loss_manager.shape_loss
+                        mgda_metrics = self.mgda_stepper.step(x_batch, y_batch, loss_functions)
+                        batch_loss = np.mean([v for k, v in mgda_metrics.items() if not k.startswith("alpha_")])
+                        train_values["loss"].append(float(batch_loss))
+                        train_values["pixel"].append(float(mgda_metrics.get("pixel", 0.0)))
+                        train_values["boundary"].append(float(mgda_metrics.get("boundary", 0.0)))
+                        train_values["shape"].append(float(mgda_metrics.get("shape", 0.0)))
+                        alpha_payload = {k: v for k, v in mgda_metrics.items() if k.startswith("alpha_")}
+                        if alpha_payload:
+                            mgda_history.append(alpha_payload)
+                    else:
+                        batch_metrics = self._weighted_train_step(x_batch, y_batch)
+                        train_values["loss"].append(float(batch_metrics["loss"]))
+                        train_values["pixel"].append(float(batch_metrics.get("pixel", 0.0)))
+                        train_values["boundary"].append(float(batch_metrics.get("boundary", 0.0)))
+                        train_values["shape"].append(float(batch_metrics.get("shape", 0.0)))
 
-            val_values: Dict[str, list] = {
-                "loss": [],
-                "iou": [],
-                "dice": [],
-                "precision": [],
-                "recall": [],
-                "pixel_accuracy": [],
-            }
-            for x_batch, y_batch in val_dataset:
-                metrics = self._eval_step(x_batch, y_batch)
-                for key in val_values:
-                    val_values[key].append(float(metrics[key]))
-
-            train_agg = self._aggregate(train_values)
-            val_agg = self._aggregate(val_values)
-            history["train_loss"].append(train_agg.get("loss", 0.0))
-            history["val_loss"].append(val_agg.get("loss", 0.0))
-            history["val_iou"].append(val_agg.get("iou", 0.0))
-            history["val_dice"].append(val_agg.get("dice", 0.0))
-            history["lr"].append(current_lr)
-
-            epoch_duration = time.time() - epoch_start
-            time_metrics = self.time_logger.log_epoch(epoch_duration)
-
-            csv_metrics = {
-                "train_loss": train_agg.get("loss", 0.0),
-                "train_pixel_loss": train_agg.get("pixel", 0.0),
-                "train_boundary_loss": train_agg.get("boundary", 0.0),
-                "train_shape_loss": train_agg.get("shape", 0.0),
-                "val_loss": val_agg.get("loss", 0.0),
-                "val_pixel_loss": 0.0,
-                "val_boundary_loss": 0.0,
-                "val_shape_loss": 0.0,
-                "val_iou": val_agg.get("iou", 0.0),
-                "val_dice": val_agg.get("dice", 0.0),
-                "val_precision": val_agg.get("precision", 0.0),
-                "val_recall": val_agg.get("recall", 0.0),
-                "val_pixel_accuracy": val_agg.get("pixel_accuracy", 0.0),
-                "learning_rate": current_lr,
-                **time_metrics,
-            }
-            if mgda_history:
-                csv_metrics.update(mgda_history[-1])
-            self.csv_logger.log_epoch(epoch=epoch + 1, metrics_dict=csv_metrics)
-
-            scalar_payload = {
-                "train/loss": train_agg.get("loss", 0.0),
-                "val/loss": val_agg.get("loss", 0.0),
-                "val/iou": val_agg.get("iou", 0.0),
-                "val/dice": val_agg.get("dice", 0.0),
-                "lr": current_lr,
-            }
-            self.tensorboard_logger.log_scalars(epoch + 1, scalar_payload)
-            self.dual_logger.log_epoch_summary(
-                epoch + 1,
-                train_metrics=train_agg,
-                val_metrics=val_agg,
-                lr=current_lr,
-                mgda_alphas=mgda_history[-1] if mgda_history else None,
-            )
-            if mgda_history:
-                self.alpha_logger.log(epoch + 1, mgda_history[-1])
-                self.tensorboard_logger.log_mgda_alphas(epoch + 1, mgda_history[-1])
-            self.validation_image_logger.log(epoch + 1, self.model)
-
-            self._update_plateau(val_agg.get("iou", 0.0))
-            should_stop = self.early_stopping.step(
-                {
-                    "val_iou": val_agg.get("iou", 0.0),
-                    "val_loss": val_agg.get("loss", 0.0),
+                val_values: Dict[str, list] = {
+                    "loss": [],
+                    "iou": [],
+                    "dice": [],
+                    "precision": [],
+                    "recall": [],
+                    "pixel_accuracy": [],
                 }
-            )
+                for x_batch, y_batch in val_dataset:
+                    metrics = self._eval_step(x_batch, y_batch)
+                    for key in val_values:
+                        val_values[key].append(float(metrics[key]))
 
-            self.checkpoint_manager.save(
-                model=self.model,
-                optimizer=self.optimizer,
-                epoch=epoch + 1,
-                metrics={
+                train_agg = self._aggregate(train_values)
+                val_agg = self._aggregate(val_values)
+                history["train_loss"].append(train_agg.get("loss", 0.0))
+                history["val_loss"].append(val_agg.get("loss", 0.0))
+                history["val_iou"].append(val_agg.get("iou", 0.0))
+                history["val_dice"].append(val_agg.get("dice", 0.0))
+                history["lr"].append(current_lr)
+
+                epoch_duration = time.time() - epoch_start
+                time_metrics = self.time_logger.log_epoch(epoch_duration)
+
+                csv_metrics = {
+                    "train_loss": train_agg.get("loss", 0.0),
+                    "train_pixel_loss": train_agg.get("pixel", 0.0),
+                    "train_boundary_loss": train_agg.get("boundary", 0.0),
+                    "train_shape_loss": train_agg.get("shape", 0.0),
+                    "val_loss": val_agg.get("loss", 0.0),
+                    "val_pixel_loss": 0.0,
+                    "val_boundary_loss": 0.0,
+                    "val_shape_loss": 0.0,
                     "val_iou": val_agg.get("iou", 0.0),
-                    "val_boundary": 1.0 - val_agg.get("dice", 0.0),
-                },
-                mgda_solver=self.mgda_solver if self.strategy == "mgda" else None,
+                    "val_dice": val_agg.get("dice", 0.0),
+                    "val_precision": val_agg.get("precision", 0.0),
+                    "val_recall": val_agg.get("recall", 0.0),
+                    "val_pixel_accuracy": val_agg.get("pixel_accuracy", 0.0),
+                    "learning_rate": current_lr,
+                    **time_metrics,
+                }
+                if mgda_history:
+                    csv_metrics.update(mgda_history[-1])
+                self.csv_logger.log_epoch(epoch=epoch + 1, metrics_dict=csv_metrics)
+
+                scalar_payload = {
+                    "train/loss": train_agg.get("loss", 0.0),
+                    "val/loss": val_agg.get("loss", 0.0),
+                    "val/iou": val_agg.get("iou", 0.0),
+                    "val/dice": val_agg.get("dice", 0.0),
+                    "lr": current_lr,
+                }
+                self.tensorboard_logger.log_scalars(epoch + 1, scalar_payload)
+                self.dual_logger.log_epoch_summary(
+                    epoch + 1,
+                    train_metrics=train_agg,
+                    val_metrics=val_agg,
+                    lr=current_lr,
+                    mgda_alphas=mgda_history[-1] if mgda_history else None,
+                )
+                if mgda_history:
+                    self.alpha_logger.log(epoch + 1, mgda_history[-1])
+                    self.tensorboard_logger.log_mgda_alphas(epoch + 1, mgda_history[-1])
+                self.validation_image_logger.log(epoch + 1, self.model)
+
+                self._update_plateau(val_agg.get("iou", 0.0))
+                should_stop = self.early_stopping.step(
+                    {
+                        "val_iou": val_agg.get("iou", 0.0),
+                        "val_loss": val_agg.get("loss", 0.0),
+                    }
+                )
+
+                self.checkpoint_manager.save(
+                    model=self.model,
+                    optimizer=self.optimizer,
+                    epoch=epoch + 1,
+                    metrics={
+                        "val_iou": val_agg.get("iou", 0.0),
+                        "val_boundary": 1.0 - val_agg.get("dice", 0.0),
+                    },
+                    mgda_solver=self.mgda_solver if self.strategy == "mgda" else None,
+                    extra_state={
+                        "early_stopping": self.early_stopping.state_dict(),
+                        "plateau_scheduler": self.plateau_scheduler.state_dict(),
+                        "history_lengths": {key: len(value) for key, value in history.items()},
+                    },
+                )
+
+                if val_agg.get("iou", 0.0) > best_metric:
+                    best_metric = val_agg["iou"]
+                    best_epoch = epoch + 1
+
+                if should_stop:
+                    break
+
+            if best_epoch == start_epoch and history["val_iou"]:
+                best_epoch = int(np.argmax(history["val_iou"])) + 1
+                best_metric = float(max(history["val_iou"]))
+
+            result = TrainingResult(
+                history=history,
+                best_epoch=best_epoch,
+                best_metric=best_metric if np.isfinite(best_metric) else 0.0,
+                stopped_early=bool(should_stop),
+                total_time_seconds=time.time() - start_time,
+                mgda_alpha_history=mgda_history,
+                resumed_from_checkpoint=resumed_from_checkpoint,
+                start_epoch=start_epoch,
             )
-
-            if val_agg.get("iou", 0.0) > best_metric:
-                best_metric = val_agg["iou"]
-                best_epoch = epoch + 1
-
-            if should_stop:
-                break
-
-        if best_epoch == start_epoch and history["val_iou"]:
-            best_epoch = int(np.argmax(history["val_iou"])) + 1
-            best_metric = float(max(history["val_iou"]))
-
-        result = TrainingResult(
-            history=history,
-            best_epoch=best_epoch,
-            best_metric=best_metric if np.isfinite(best_metric) else 0.0,
-            stopped_early=bool(should_stop),
-            total_time_seconds=time.time() - start_time,
-            mgda_alpha_history=mgda_history,
-        )
-        self._save_history(result)
-        self.tensorboard_logger.close()
-        self.dual_logger.close()
-        return result
+            self._save_history(result)
+            return result
+        except Exception as exc:
+            failure_payload = {
+                "epoch": current_epoch + 1,
+                "strategy": self.strategy,
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc),
+                "traceback": traceback.format_exc(),
+            }
+            with (self.results_dir / "training_error.json").open("w", encoding="utf-8") as handle:
+                json.dump(failure_payload, handle, indent=2)
+            self.dual_logger.exception(f"Training failed at epoch {current_epoch + 1}")
+            raise
+        finally:
+            self.tensorboard_logger.close()
+            self.dual_logger.close()
 
     def _save_history(self, result: TrainingResult) -> None:
         summary = {
@@ -368,6 +471,8 @@ class Trainer:
             "best_metric": result.best_metric,
             "stopped_early": result.stopped_early,
             "total_time_seconds": result.total_time_seconds,
+            "resumed_from_checkpoint": result.resumed_from_checkpoint,
+            "start_epoch": result.start_epoch,
         }
         with (self.results_dir / "training_summary.json").open("w", encoding="utf-8") as handle:
             json.dump(summary, handle, indent=2)

@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import tensorflow as tf
 from PIL import Image
 
 from data.loader import BuildingSegmentationDataset, DatasetConfig
@@ -88,6 +89,49 @@ class TestDataLoading(unittest.TestCase):
         self.assertLessEqual(float(image.max()), 1.0)
         self.assertGreaterEqual(float(mask.min()), 0.0)
         self.assertLessEqual(float(mask.max()), 1.0)
+
+    def test_tf_dataset_augmentation_pipeline_runs(self) -> None:
+        loader = BuildingSegmentationDataset(self.config, skipped_log_path=str(self.root / "skipped.txt"))
+        loader.validate_pairs()
+        dataset = loader.get_tf_dataset(
+            indices=[0, 1, 2],
+            augment=True,
+            augmentation_config={
+                "horizontal_flip": True,
+                "vertical_flip": True,
+                "random_rotation": True,
+                "brightness_range": 0.1,
+                "contrast_range": 0.1,
+                "seed": 123,
+            },
+            shuffle=False,
+        )
+        batch = next(iter(dataset.take(1)))
+        images, masks = batch
+        self.assertEqual(images.shape[0], 3)
+        self.assertEqual(images.shape[-1], 3)
+        self.assertEqual(masks.shape[0], 3)
+        self.assertEqual(masks.shape[-1], 1)
+        self.assertEqual(images.dtype, np.float32)
+        self.assertEqual(masks.dtype, np.float32)
+
+    def test_tf_dataset_augmentation_pipeline_is_repeatable(self) -> None:
+        loader = BuildingSegmentationDataset(self.config, skipped_log_path=str(self.root / "skipped.txt"))
+        loader.validate_pairs()
+        augmentation_config = {
+            "horizontal_flip": True,
+            "vertical_flip": True,
+            "random_rotation": True,
+            "brightness_range": 0.1,
+            "contrast_range": 0.1,
+            "seed": 123,
+        }
+        dataset_a = loader.get_tf_dataset(indices=[0], augment=True, augmentation_config=augmentation_config, shuffle=False)
+        dataset_b = loader.get_tf_dataset(indices=[0], augment=True, augmentation_config=augmentation_config, shuffle=False)
+        images_a, masks_a = next(iter(dataset_a.take(1)))
+        images_b, masks_b = next(iter(dataset_b.take(1)))
+        self.assertTrue(np.allclose(images_a.numpy(), images_b.numpy()))
+        self.assertTrue(np.allclose(masks_a.numpy(), masks_b.numpy()))
 
     def test_stratified_split_ratios(self) -> None:
         loader = BuildingSegmentationDataset(self.config, skipped_log_path=str(self.root / "skipped.txt"))

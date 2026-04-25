@@ -21,6 +21,7 @@ def dataframe_to_latex(
     highlight_col_direction = highlight_col_direction or {}
 
     if highlight_best and not working.empty:
+        working = working.astype(object)
         for column, direction in highlight_col_direction.items():
             if column not in working.columns:
                 continue

@@ -185,3 +185,26 @@ class TestTraining(unittest.TestCase):
         result = trainer.fit(train_ds, val_ds)
         self.assertTrue(result.stopped_early)
 
+    def test_training_resumes_from_checkpoint(self) -> None:
+        cfg = json.loads(json.dumps(self.base_config))
+        cfg["training"] = dict(self.base_config["training"])
+        cfg["training"]["epochs"] = 1
+        cfg["checkpointing"] = {"auto_resume": True}
+        model = get_model(cfg)
+        run_dir = Path(self.tmp.name) / "resume"
+        ckpt = CheckpointManager(run_dir / "checkpoints")
+        trainer = Trainer(model, cfg, run_dir, ckpt)
+        train_ds, val_ds, _ = self._build_datasets()
+        first = trainer.fit(train_ds, val_ds)
+        self.assertEqual(len(first.history["train_loss"]), 1)
+
+        resumed_cfg = json.loads(json.dumps(cfg))
+        resumed_cfg["training"]["epochs"] = 3
+        resumed_model = get_model(resumed_cfg)
+        resumed_trainer = Trainer(resumed_model, resumed_cfg, run_dir, ckpt)
+        resumed = resumed_trainer.fit(train_ds, val_ds)
+        self.assertTrue(resumed.resumed_from_checkpoint)
+        self.assertGreaterEqual(resumed.start_epoch, 1)
+        self.assertGreaterEqual(len(resumed.history["train_loss"]), 3)
+        resumed_trainer.dual_logger.close()
+

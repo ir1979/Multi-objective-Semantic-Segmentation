@@ -111,6 +111,7 @@ def run_suite_with_logging(
     summary_path = report_root / "test_report.txt"
     detail_path = report_root / "test_details.log"
     timings_path = report_root / "test_timings.json"
+    failures_path = report_root / "test_failures.log"
 
     with detail_path.open("w", encoding="utf-8") as detail_handle:
         tee_stream = TeeStream(sys.stderr, detail_handle)
@@ -135,12 +136,20 @@ def run_suite_with_logging(
                     f"was_successful={result.wasSuccessful()}",
                     f"detail_log={detail_path}",
                     f"timings_log={timings_path}",
+                    f"failures_log={failures_path}",
                 ]
             ),
             encoding="utf-8",
         )
         timings_path.write_text(
             json.dumps(getattr(result, "test_timings", []), indent=2),
+            encoding="utf-8",
+        )
+        failure_blocks = []
+        for test_case, traceback_text in list(result.failures) + list(result.errors):
+            failure_blocks.append(f"[{test_case.id()}]\n{traceback_text}")
+        failures_path.write_text(
+            "\n\n".join(failure_blocks) if failure_blocks else "No failures or errors.\n",
             encoding="utf-8",
         )
     return result, summary_path, detail_path

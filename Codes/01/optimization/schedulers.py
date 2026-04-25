@@ -65,3 +65,22 @@ class PlateauScheduler:
             self.current_lr = max(self.min_lr, self.current_lr * self.factor)
             self.wait = 0
         return self.current_lr
+
+    def state_dict(self) -> dict:
+        """Serialize scheduler state for checkpoint resume."""
+        return {
+            "best": self.best,
+            "wait": self.wait,
+            "current_lr": self.current_lr,
+            "initial_lr": self.initial_lr,
+            "factor": self.factor,
+            "patience": self.patience,
+            "min_lr": self.min_lr,
+            "mode": self.mode,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore scheduler state."""
+        self.best = float(state.get("best", self.best))
+        self.wait = int(state.get("wait", self.wait))
+        self.current_lr = float(state.get("current_lr", self.current_lr))

@@ -43,10 +43,7 @@ class ParetoExperiment:
         """Compute Pareto front from sweep results."""
         if results.empty:
             return results.copy()
-        frame = results.copy()
-        frame["obj_iou"] = 1.0 - frame["iou"]
-        frame["obj_boundary"] = frame["hausdorff"]
-        frame["obj_convexity"] = 1.0 - frame["convexity"]
+        frame = self._add_objective_columns(results)
         computer = ParetoFrontComputer()
         front = computer.compute(
             frame,
@@ -54,6 +51,15 @@ class ParetoExperiment:
             minimize=[True, True, True],
         )
         return front.sort_values("obj_iou")
+
+    @staticmethod
+    def _add_objective_columns(results: pd.DataFrame) -> pd.DataFrame:
+        """Attach optimization-objective columns used by Pareto exports."""
+        frame = results.copy()
+        frame["obj_iou"] = 1.0 - frame["iou"]
+        frame["obj_boundary"] = frame["hausdorff"]
+        frame["obj_convexity"] = 1.0 - frame["convexity"]
+        return frame
 
     @staticmethod
     def is_dominated(point: np.ndarray, other_points: np.ndarray) -> bool:
@@ -66,10 +72,12 @@ class ParetoExperiment:
     def save_outputs(self, results: pd.DataFrame, pareto_front: pd.DataFrame) -> None:
         """Export Pareto data tables and figures."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        results.to_csv(self.output_dir / "pareto_points.csv", index=False)
-        pareto_front.to_csv(self.output_dir / "pareto_front.csv", index=False)
+        results_with_objectives = self._add_objective_columns(results)
+        front_with_objectives = self._add_objective_columns(pareto_front)
+        results_with_objectives.to_csv(self.output_dir / "pareto_points.csv", index=False)
+        front_with_objectives.to_csv(self.output_dir / "pareto_front.csv", index=False)
         dataframe_to_latex(
-            pareto_front[
+            front_with_objectives[
                 [
                     "pixel_weight",
                     "boundary_weight",
@@ -86,15 +94,15 @@ class ParetoExperiment:
             save_path=str(self.output_dir / "pareto_points.tex"),
         )
         generate_pareto_2d(
-            results,
-            pareto_front,
+            results_with_objectives,
+            front_with_objectives,
             x_col="obj_iou",
             y_col="obj_boundary",
             save_path=str(self.output_dir / "pareto_2d"),
         )
         generate_pareto_3d(
-            results,
-            pareto_front,
+            results_with_objectives,
+            front_with_objectives,
             x_col="obj_iou",
             y_col="obj_boundary",
             z_col="obj_convexity",

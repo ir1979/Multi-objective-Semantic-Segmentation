@@ -68,3 +68,38 @@ class TestCheckpointing(unittest.TestCase):
 
             self.assertTrue(ckpt.has_checkpoint())
 
+    def test_restore_optimizer_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt = CheckpointManager(Path(tmpdir))
+            model = tf.keras.Sequential(
+                [
+                    tf.keras.layers.Input(shape=(8,)),
+                    tf.keras.layers.Dense(4, activation="relu"),
+                    tf.keras.layers.Dense(1, activation="sigmoid"),
+                ]
+            )
+            optimizer = tf.keras.optimizers.Adam(1e-3)
+            dummy_x = tf.random.uniform((2, 8))
+            dummy_y = tf.random.uniform((2, 1))
+            with tf.GradientTape() as tape:
+                pred = model(dummy_x, training=True)
+                loss = tf.reduce_mean(tf.keras.losses.binary_crossentropy(dummy_y, pred))
+            grads = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(grads, model.trainable_variables))
+            ckpt.save(model=model, optimizer=optimizer, epoch=1, metrics={"val_iou": 0.5})
+
+            _, state = ckpt.load_latest()
+            self.assertIsNotNone(state)
+
+            restored_model = tf.keras.Sequential(
+                [
+                    tf.keras.layers.Input(shape=(8,)),
+                    tf.keras.layers.Dense(4, activation="relu"),
+                    tf.keras.layers.Dense(1, activation="sigmoid"),
+                ]
+            )
+            restored_model(tf.random.uniform((1, 8)))
+            restored_optimizer = tf.keras.optimizers.Adam(1e-3)
+            restored = CheckpointManager.restore_optimizer_state(restored_optimizer, state, restored_model)
+            self.assertTrue(restored)
+

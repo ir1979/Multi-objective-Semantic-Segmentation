@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Mapping
+from typing import Dict, List, Mapping, Sequence
 
 import tensorflow as tf
 
 from losses.boundary_losses import ApproxHausdorffLoss
+from losses.deep_supervision_loss import DeepSupervisionLoss
 from losses.pixel_losses import BCELoss, BCEIoULoss, DiceLoss, FocalLoss, IoULoss
 from losses.shape_losses import ConvexityLoss, RegularityLoss
 
@@ -48,18 +49,37 @@ class LossManager:
             "boundary": float(loss_cfg.get("boundary", {}).get("weight", 0.0)),
             "shape": float(loss_cfg.get("shape", {}).get("weight", 0.0)),
         }
+        deep_supervision_cfg = dict(loss_cfg.get("deep_supervision", {}))
+        self.deep_supervision_enabled = bool(deep_supervision_cfg.get("enabled", False))
+        self.deep_supervision_weights = list(deep_supervision_cfg.get("weights", [0.5, 0.3, 0.2, 0.1]))
 
-    def compute_losses(self, y_true: tf.Tensor, y_pred: tf.Tensor) -> Dict[str, tf.Tensor]:
+    def _apply_loss(
+        self,
+        loss_fn: tf.keras.losses.Loss | callable,
+        y_true: tf.Tensor,
+        y_pred: tf.Tensor | Sequence[tf.Tensor],
+    ) -> tf.Tensor:
+        if isinstance(y_pred, (list, tuple)):
+            if self.deep_supervision_enabled:
+                weights = self.deep_supervision_weights[: len(y_pred)]
+                if len(weights) < len(y_pred):
+                    weights = weights + [weights[-1]] * (len(y_pred) - len(weights))
+            else:
+                weights = [1.0 / float(len(y_pred))] * len(y_pred)
+            return DeepSupervisionLoss(loss_fn, weights)(y_true, y_pred)
+        return loss_fn(y_true, y_pred)
+
+    def compute_losses(self, y_true: tf.Tensor, y_pred: tf.Tensor | Sequence[tf.Tensor]) -> Dict[str, tf.Tensor]:
         """Return individual loss values."""
         losses: Dict[str, tf.Tensor] = {
-            "pixel": self.pixel_loss(y_true, y_pred),
+            "pixel": self._apply_loss(self.pixel_loss, y_true, y_pred),
         }
         if self.boundary_enabled:
-            losses["boundary"] = self.boundary_loss(y_true, y_pred)
+            losses["boundary"] = self._apply_loss(self.boundary_loss, y_true, y_pred)
         if self.shape_enabled:
-            losses["shape"] = 0.5 * self.shape_loss(y_true, y_pred) + 0.5 * self.shape_reg_loss(
-                y_true, y_pred
-            )
+            shape_primary = self._apply_loss(self.shape_loss, y_true, y_pred)
+            shape_regularizer = self._apply_loss(self.shape_reg_loss, y_true, y_pred)
+            losses["shape"] = 0.5 * shape_primary + 0.5 * shape_regularizer
         return losses
 
     def compute_weighted_total(self, losses_dict: Mapping[str, tf.Tensor]) -> tf.Tensor:

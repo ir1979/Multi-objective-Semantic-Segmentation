@@ -55,13 +55,17 @@ def build_augmentation_pipeline(
             seed=int(config.get("seed", 42)),
         )
 
-    generator = tf.random.Generator.from_seed(config.seed)
+    def _make_seed(image: tf.Tensor, mask: tf.Tensor) -> tf.Tensor:
+        """Create a stateless RNG seed of shape ``[2]`` for TF 2.10+."""
+        image_token = tf.cast(tf.reduce_sum(tf.cast(image * 255.0, tf.int64)), tf.int32)
+        mask_token = tf.cast(tf.reduce_sum(tf.cast(mask * 255.0, tf.int64)), tf.int32)
+        mixed = tf.math.floormod(image_token ^ mask_token, tf.constant(2**31 - 1, dtype=tf.int32))
+        return tf.stack([tf.constant(config.seed, dtype=tf.int32), mixed], axis=0)
 
     def augment(image: tf.Tensor, mask: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
-        seed_values = generator.make_seeds(1)[0]
         random_values = tf.random.stateless_uniform(
-            [5],
-            seed=tf.cast(seed_values, tf.int32),
+            shape=[5],
+            seed=_make_seed(image, mask),
             minval=0.0,
             maxval=1.0,
             dtype=tf.float32,
