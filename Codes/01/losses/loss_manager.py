@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Sequence
+from typing import Callable, Dict, List, Mapping, Sequence
 
 import tensorflow as tf
 
@@ -100,6 +100,20 @@ class LossManager:
         if self.shape_enabled:
             names.append("shape")
         return names
+
+    def get_loss_functions(self) -> Dict[str, Callable[[tf.Tensor, tf.Tensor | Sequence[tf.Tensor]], tf.Tensor]]:
+        """Return active per-objective loss callables with deep-supervision support."""
+
+        losses: Dict[str, Callable[[tf.Tensor, tf.Tensor | Sequence[tf.Tensor]], tf.Tensor]] = {
+            "pixel": lambda y_true, y_pred: self._apply_loss(self.pixel_loss, y_true, y_pred),
+        }
+        if self.boundary_enabled:
+            losses["boundary"] = lambda y_true, y_pred: self._apply_loss(self.boundary_loss, y_true, y_pred)
+        if self.shape_enabled:
+            losses["shape"] = lambda y_true, y_pred: 0.5 * self._apply_loss(
+                self.shape_loss, y_true, y_pred
+            ) + 0.5 * self._apply_loss(self.shape_reg_loss, y_true, y_pred)
+        return losses
 
 
 # Legacy helper expected by existing training code.

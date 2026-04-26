@@ -36,6 +36,13 @@ from training.metrics import (
 )
 
 
+def _primary_prediction(predictions: tf.Tensor | list[tf.Tensor] | tuple[tf.Tensor, ...]) -> tf.Tensor:
+    """Return the main prediction tensor for metrics and visualization."""
+    if isinstance(predictions, (list, tuple)):
+        return predictions[-1]
+    return predictions
+
+
 def _metric_iou(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
     y_pred = tf.cast(y_pred > 0.5, tf.float32)
     inter = tf.reduce_sum(y_true * y_pred)
@@ -227,8 +234,6 @@ class Trainer:
     def _weighted_train_step(self, x_batch: tf.Tensor, y_batch: tf.Tensor) -> Dict[str, tf.Tensor]:
         with tf.GradientTape() as tape:
             predictions = self.model(x_batch, training=True)
-            if isinstance(predictions, list):
-                predictions = predictions[-1]
             loss_dict = self.loss_manager.compute_losses(y_batch, predictions)
             total_loss = self.loss_manager.compute_weighted_total(loss_dict)
         gradients = tape.gradient(total_loss, self.model.trainable_variables)
@@ -238,11 +243,9 @@ class Trainer:
     @tf.function
     def _eval_step(self, x_batch: tf.Tensor, y_batch: tf.Tensor) -> Dict[str, tf.Tensor]:
         predictions = self.model(x_batch, training=False)
-        if isinstance(predictions, list):
-            predictions = predictions[-1]
         loss_dict = self.loss_manager.compute_losses(y_batch, predictions)
         total_loss = self.loss_manager.compute_weighted_total(loss_dict)
-        metrics = {name: fn(y_batch, predictions) for name, fn in METRIC_FNS.items()}
+        metrics = {name: fn(y_batch, _primary_prediction(predictions)) for name, fn in METRIC_FNS.items()}
         return {"loss": total_loss, **loss_dict, **metrics}
 
     @staticmethod
@@ -261,6 +264,43 @@ class Trainer:
         scheduler_type = str(self.config.get("training", {}).get("lr_scheduler", {}).get("type", "cosine")).lower()
         if scheduler_type == "plateau":
             self.optimizer.learning_rate.assign(self.plateau_scheduler.step(metric_value))
+
+    def _serialize_for_json(self, value: Any) -> Any:
+        """Convert numpy/tensor values into JSON-safe Python primitives."""
+        if isinstance(value, dict):
+            return {str(key): self._serialize_for_json(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._serialize_for_json(item) for item in value]
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if tf.is_tensor(value):
+            return value.numpy().tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        return value
+
+    def _build_result_from_history(
+        self,
+        history: Dict[str, list],
+        start_epoch: int,
+        resumed_from_checkpoint: bool,
+        total_time_seconds: float,
+        mgda_history: list,
+        stopped_early: bool = False,
+    ) -> TrainingResult:
+        """Create a consistent result payload from the current in-memory history."""
+        best_metric = max(history["val_iou"]) if history["val_iou"] else -float("inf")
+        best_epoch = int(np.argmax(history["val_iou"])) + 1 if history["val_iou"] else start_epoch
+        return TrainingResult(
+            history=history,
+            best_epoch=best_epoch,
+            best_metric=best_metric if np.isfinite(best_metric) else 0.0,
+            stopped_early=bool(stopped_early),
+            total_time_seconds=total_time_seconds,
+            mgda_alpha_history=mgda_history,
+            resumed_from_checkpoint=resumed_from_checkpoint,
+            start_epoch=start_epoch,
+        )
 
     def fit(
         self,
@@ -302,6 +342,24 @@ class Trainer:
             best_metric = max(history["val_iou"]) if history["val_iou"] else -float("inf")
             best_epoch = int(np.argmax(history["val_iou"])) + 1 if history["val_iou"] else start_epoch
             mgda_history = list(self.mgda_solver.get_alpha_history()) if self.strategy == "mgda" else []
+            self.dual_logger.info(
+                f"Training setup | strategy={self.strategy} epochs={epochs} start_epoch={start_epoch} "
+                f"resumed={resumed_from_checkpoint} trainable_vars={len(self.model.trainable_variables)}"
+            )
+            if resumed_from_checkpoint and start_epoch >= epochs:
+                self.dual_logger.info(
+                    f"Checkpoint already reached configured epochs (start_epoch={start_epoch}, epochs={epochs}); "
+                    "skipping additional training and reusing saved state."
+                )
+                result = self._build_result_from_history(
+                    history=history,
+                    start_epoch=start_epoch,
+                    resumed_from_checkpoint=True,
+                    total_time_seconds=time.time() - start_time,
+                    mgda_history=mgda_history,
+                )
+                self._save_history(result)
+                return result
 
             self.validation_image_logger.sample_batch = next(iter(val_dataset.take(1)))
         except Exception:
@@ -316,11 +374,7 @@ class Trainer:
 
                 for x_batch, y_batch in train_dataset:
                     if self.strategy == "mgda":
-                        loss_functions = {"pixel": self.loss_manager.pixel_loss}
-                        if self.loss_manager.boundary_enabled:
-                            loss_functions["boundary"] = self.loss_manager.boundary_loss
-                        if self.loss_manager.shape_enabled:
-                            loss_functions["shape"] = self.loss_manager.shape_loss
+                        loss_functions = self.loss_manager.get_loss_functions()
                         mgda_metrics = self.mgda_stepper.step(x_batch, y_batch, loss_functions)
                         batch_loss = np.mean([v for k, v in mgda_metrics.items() if not k.startswith("alpha_")])
                         train_values["loss"].append(float(batch_loss))
@@ -425,6 +479,11 @@ class Trainer:
                         "history_lengths": {key: len(value) for key, value in history.items()},
                     },
                 )
+                self.dual_logger.debug(
+                    f"Checkpoint saved | epoch={epoch + 1} "
+                    f"val_iou={val_agg.get('iou', 0.0):.6f} "
+                    f"checkpoint_dir={self.checkpoint_manager.checkpoint_dir}"
+                )
 
                 if val_agg.get("iou", 0.0) > best_metric:
                     best_metric = val_agg["iou"]
@@ -437,15 +496,13 @@ class Trainer:
                 best_epoch = int(np.argmax(history["val_iou"])) + 1
                 best_metric = float(max(history["val_iou"]))
 
-            result = TrainingResult(
+            result = self._build_result_from_history(
                 history=history,
-                best_epoch=best_epoch,
-                best_metric=best_metric if np.isfinite(best_metric) else 0.0,
-                stopped_early=bool(should_stop),
-                total_time_seconds=time.time() - start_time,
-                mgda_alpha_history=mgda_history,
-                resumed_from_checkpoint=resumed_from_checkpoint,
                 start_epoch=start_epoch,
+                resumed_from_checkpoint=resumed_from_checkpoint,
+                total_time_seconds=time.time() - start_time,
+                mgda_history=mgda_history,
+                stopped_early=bool(should_stop),
             )
             self._save_history(result)
             return result
@@ -478,7 +535,11 @@ class Trainer:
             json.dump(summary, handle, indent=2)
         if result.mgda_alpha_history:
             with (self.results_dir / "mgda_alphas.json").open("w", encoding="utf-8") as handle:
-                json.dump(result.mgda_alpha_history, handle, indent=2)
+                json.dump(self._serialize_for_json(result.mgda_alpha_history), handle, indent=2)
+        self.dual_logger.debug(
+            f"Training artifacts saved | summary={self.results_dir / 'training_summary.json'} "
+            f"mgda_history_entries={len(result.mgda_alpha_history)}"
+        )
 
 
 def train_from_config(

@@ -36,6 +36,8 @@ class ExperimentRunner:
 
     config: Mapping[str, object]
     force: bool = False
+    console_level: str = "INFO"
+    file_level: str = "DEBUG"
 
     def __post_init__(self) -> None:
         export_cfg = dict(self.config.get("export", {}))
@@ -157,7 +159,7 @@ class ExperimentRunner:
 
         run_dir, resuming = self._resolve_run_dir(experiment_name)
         run_dir.mkdir(parents=True, exist_ok=True)
-        logger = DualLogger(run_dir / "run.log")
+        logger = DualLogger(run_dir / "run.log", console_level=self.console_level, file_level=self.file_level)
         self.registry.register(experiment_name, config_path=f"configs/{experiment_name}.yaml")
         try:
             self.registry.update_status(
@@ -176,13 +178,35 @@ class ExperimentRunner:
 
             resolved = self._override_config(self.config, exp_cfg)
             save_resolved_config(resolved, str(run_dir / "config.yaml"))
+            logger.log_config(
+                {
+                    "experiment_name": experiment_name,
+                    "strategy": resolved.get("loss", {}).get("strategy"),
+                    "architecture": resolved.get("model", {}).get("architecture"),
+                    "deep_supervision": resolved.get("model", {}).get("deep_supervision"),
+                    "results_dir": str(run_dir),
+                    "resuming": resuming,
+                }
+            )
 
             loader, split, train_ds, val_ds, test_ds = self._build_dataset(run_dir)
+            logger.info(
+                f"Dataset prepared | total_pairs={len(loader.pairs)} "
+                f"train={len(split['train'])} val={len(split['val'])} test={len(split['test'])}"
+            )
             model = get_model(resolved)
             checkpoint_manager = CheckpointManager(run_dir / "checkpoints")
             trainer = Trainer(model, resolved, run_dir, checkpoint_manager)
             training_result = trainer.fit(train_ds, val_ds)
+            logger.info(
+                "Training finished | "
+                f"epochs_recorded={len(training_result.history.get('train_loss', []))} "
+                f"best_epoch={training_result.best_epoch} "
+                f"best_metric={float(training_result.best_metric):.6f} "
+                f"resumed={training_result.resumed_from_checkpoint}"
+            )
             test_metrics = self.evaluator.evaluate(model, test_ds)
+            logger.info(f"Evaluation metrics: {test_metrics}")
             complexity = ModelComplexityAnalyzer(
                 input_shape=(
                     int(resolved["data"]["image_size"]),
@@ -190,6 +214,7 @@ class ExperimentRunner:
                     3,
                 )
             ).analyze(model)
+            logger.info(f"Complexity metrics: {complexity}")
 
             summary_payload = {
                 "experiment_name": experiment_name,
@@ -275,13 +300,16 @@ class ExperimentRunner:
 
     def run_all(self) -> None:
         failures: Dict[str, str] = {}
+        failure_path = self.results_root / "pipeline_failures.json"
         for name in self.get_all_experiments():
             self.run_single(name)
             status = self.registry.load().get(name, {})
             if status.get("status") == "failed":
                 failures[name] = str(status.get("error_message", "unknown"))
         if failures:
-            JSONSummary(self.results_root / "pipeline_failures.json").save(failures)
+            JSONSummary(failure_path).save(failures)
+        elif failure_path.exists():
+            failure_path.unlink()
 
     def get_status(self) -> Dict[str, str]:
         payload = self.registry.load()

@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import argparse
-import json
 import importlib
+import json
+import logging
+import os
 import platform
 import shutil
 import sys
 import time
 import traceback
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 try:
     import tensorflow as tf
@@ -20,6 +25,7 @@ except Exception:  # pragma: no cover - exercised in dependency-missing envs
     tf = None
 
 from data.integrity import compute_dataset_hash
+from logging_utils.logger import DualLogger
 from utils.config_loader import ConfigValidationError, load_config
 from utils.reproducibility import set_global_seed
 from utils.test_reporting import run_suite_with_logging
@@ -32,6 +38,73 @@ class TestResult:
     total: int
     failed: int
     critical_failures: int
+
+
+def resolve_console_level(verbose: int, quiet: bool) -> str:
+    """Map CLI verbosity flags to a console log level."""
+    if quiet:
+        return "ERROR"
+    if verbose >= 2:
+        return "DEBUG"
+    if verbose == 1:
+        return "INFO"
+    return "WARNING"
+
+
+def normalize_log_level(level: str) -> str:
+    """Normalize a user-provided logging level string."""
+    return str(level).upper()
+
+
+def apply_logging_overrides(config: Dict[str, object], console_level: str, file_level: str) -> Dict[str, object]:
+    """Apply CLI logging overrides while keeping file logs verbose."""
+    resolved = json.loads(json.dumps(config))
+    logging_cfg = dict(resolved.get("logging", {}))
+    logging_cfg["console_level"] = normalize_log_level(console_level)
+    logging_cfg["file_level"] = normalize_log_level(file_level)
+    resolved["logging"] = logging_cfg
+    return resolved
+
+
+def configure_runtime_warnings(
+    results_dir: str | Path = "results",
+    console_level: str = "INFO",
+    file_level: str = "DEBUG",
+) -> DualLogger:
+    """Set predictable warning/logging behavior for production runs."""
+    results_path = Path(results_dir)
+    logger = DualLogger(
+        results_path / "pipeline.log",
+        console_level=normalize_log_level(console_level),
+        file_level=normalize_log_level(file_level),
+    )
+    logging.captureWarnings(True)
+    warning_logger = logging.getLogger("py.warnings")
+    warning_logger.setLevel(logging.WARNING)
+    for handler in logger.logger.handlers:
+        warning_logger.addHandler(handler)
+    warning_logger.propagate = False
+
+    warnings.filterwarnings(
+        "once",
+        message=r".*Compiled the loaded model, but the compiled metrics have yet to be built.*",
+    )
+    warnings.filterwarnings(
+        "once",
+        message=r".*This file format is considered legacy.*",
+    )
+    warnings.filterwarnings(
+        "once",
+        category=FutureWarning,
+        module=r"pandas.*",
+    )
+
+    if tf is not None:
+        tf.get_logger().setLevel("WARNING" if console_level == "DEBUG" else "ERROR")
+    logging.getLogger("tensorflow").setLevel(logging.WARNING if console_level == "DEBUG" else logging.ERROR)
+    logging.getLogger("absl").setLevel(logging.WARNING if console_level == "DEBUG" else logging.ERROR)
+    logger.info("Runtime warning filters configured.")
+    return logger
 
 
 def run_test_suite(quick: bool = False) -> TestResult:
@@ -75,12 +148,11 @@ def validate_environment() -> Tuple[bool, List[str], List[str]]:
         warnings.append("No GPU detected; full pipeline will be significantly slower.")
     else:
         try:
-            memory_info = tf.config.experimental.get_memory_info("GPU:0")
-            gpu_memory_gb = memory_info.get("current", 0) / (1024**3)
-            if gpu_memory_gb < 8:
-                warnings.append("Detected GPU memory appears below 8 GB.")
+            device_details = tf.config.experimental.get_device_details(gpus[0])
+            device_name = device_details.get("device_name") or getattr(gpus[0], "name", "GPU:0")
+            warnings.append(f"Detected GPU device: {device_name}.")
         except Exception:
-            warnings.append("Unable to read GPU memory information.")
+            warnings.append("GPU detected, but detailed device information is unavailable.")
 
     required_packages = [
         "numpy",
@@ -139,46 +211,76 @@ def main() -> None:
     parser.add_argument("--experiment", type=str, default=None, help="Run single experiment")
     parser.add_argument("--force", action="store_true", help="Re-run completed experiments")
     parser.add_argument("--no-pareto", action="store_true", help="Skip Pareto sweep")
+    parser.add_argument("-v", "--verbose", action="count", default=1, help="Increase console verbosity; repeat for DEBUG")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Only show errors on the console")
+    parser.add_argument(
+        "--log-file-level",
+        default="DEBUG",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Set the minimum level written to log files",
+    )
     args = parser.parse_args()
 
     start_time = time.time()
+    console_level = resolve_console_level(args.verbose, args.quiet)
+    file_level = normalize_log_level(args.log_file_level)
+    pipeline_logger = configure_runtime_warnings("results", console_level=console_level, file_level=file_level)
+    pipeline_logger.info(f"Starting pipeline with args: {vars(args)}")
     env_valid, env_warnings, env_errors = validate_environment()
     if not env_valid:
         print("CRITICAL: Environment validation failed")
         for err in env_errors:
             print(f"  ERROR: {err}")
+            pipeline_logger.error(f"Environment error: {err}")
+        pipeline_logger.close()
         sys.exit(2)
     for warn in env_warnings:
         print(f"  WARNING: {warn}")
+        pipeline_logger.warning(f"Environment warning: {warn}")
 
     try:
         config = load_config(args.config)
     except ConfigValidationError as exc:
         print(f"CRITICAL: Config validation failed: {exc}")
+        pipeline_logger.exception("Configuration validation failed")
+        pipeline_logger.close()
         sys.exit(2)
 
+    config = apply_logging_overrides(config, console_level, file_level)
     set_global_seed(int(config.get("project", {}).get("seed", 42)))
+    pipeline_logger.log_config({"config_path": args.config, "seed": int(config.get("project", {}).get("seed", 42))})
 
     ds_valid, ds_info = validate_dataset(config)
     if not ds_valid:
         print("CRITICAL: Dataset validation failed")
         print(ds_info)
+        pipeline_logger.error(f"Dataset validation failed: {ds_info}")
+        pipeline_logger.close()
         sys.exit(2)
     print(f"Dataset info: {json.dumps(ds_info, indent=2)}")
+    pipeline_logger.info(f"Dataset info: {ds_info}")
 
     if not args.experiments_only and not args.figures_only:
         test_result = run_test_suite(quick=args.experiment is not None)
+        pipeline_logger.info(
+            f"Test suite finished | total={test_result.total} failed={test_result.failed} "
+            f"critical_failures={test_result.critical_failures}"
+        )
         if test_result.critical_failures > 0:
             print(f"CRITICAL: {test_result.critical_failures} critical tests failed")
+            pipeline_logger.error(f"Aborting due to {test_result.critical_failures} critical test failures.")
+            pipeline_logger.close()
             sys.exit(3)
 
     if args.test_only:
         print("Tests completed. Exiting.")
+        pipeline_logger.info("Exiting after test-only run.")
+        pipeline_logger.close()
         sys.exit(0)
 
     from experiments import ExperimentRegistry, ExperimentRunner
 
-    runner = ExperimentRunner(config, force=args.force)
+    runner = ExperimentRunner(config, force=args.force, console_level=console_level, file_level=file_level)
     try:
         if not args.figures_only:
             if args.experiment:
@@ -195,6 +297,8 @@ def main() -> None:
         error_log.write_text(traceback.format_exc(), encoding="utf-8")
         print(f"CRITICAL: Pipeline failed with {exc.__class__.__name__}: {exc}")
         print(f"Detailed traceback written to {error_log}")
+        pipeline_logger.exception("Pipeline execution failed")
+        pipeline_logger.close()
         sys.exit(4)
 
     elapsed = time.time() - start_time
@@ -213,6 +317,12 @@ def main() -> None:
         print(f"Experiments failed: {', '.join(failed)}")
     print("Paper outputs: paper/figures and paper/tables")
     print("=" * 60)
+    pipeline_logger.info(
+        f"Pipeline finished | completed={len(completed)} failed={len(failed)} elapsed_seconds={elapsed:.2f}"
+    )
+    if failed:
+        pipeline_logger.warning(f"Failed experiments: {failed}")
+    pipeline_logger.close()
 
     sys.exit(0 if not failed else 1)
 

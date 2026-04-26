@@ -96,7 +96,6 @@ class UNetPlusPlus(tf.keras.Model):
                 merged = tf.concat(concat_tensors, axis=-1)
                 x_nodes[(i, j)] = self.decoder_blocks[(i, j)](merged, training=training)
 
-        outputs = [head(x_nodes[(0, idx)]) for idx, head in enumerate(self.output_heads, start=1)]
         if self.deep_supervision:
-            return outputs
-        return outputs[-1]
+            return [head(x_nodes[(0, idx)]) for idx, head in enumerate(self.output_heads, start=1)]
+        return self.output_heads[-1](x_nodes[(0, 4)])

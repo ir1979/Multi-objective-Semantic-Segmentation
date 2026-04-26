@@ -142,12 +142,8 @@ class MGDATrainStep:
         """Execute an MGDA step and apply combined gradient."""
         with tf.GradientTape(persistent=True) as tape:
             predictions = self.model(x_batch, training=True)
-            if isinstance(predictions, list):
-                predictions_main = predictions[-1]
-            else:
-                predictions_main = predictions
             loss_values = {
-                name: tf.cast(loss_fn(y_batch, predictions_main), tf.float32)
+                name: tf.cast(loss_fn(y_batch, predictions), tf.float32)
                 for name, loss_fn in losses.items()
             }
 

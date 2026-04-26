@@ -13,7 +13,9 @@ from PIL import Image
 from data.loader import BuildingSegmentationDataset, DatasetConfig
 from data.splitter import StratifiedSplitter
 from experiments.pareto_experiment import ParetoExperiment
+from models.complexity import ModelComplexityAnalyzer
 from models.unet import UNet
+from models.unetpp import UNetPlusPlus
 from visualization.boundary_overlay import generate_boundary_overlay
 from visualization.complexity_plot import generate_complexity_plot
 from visualization.error_maps import generate_error_maps
@@ -124,6 +126,12 @@ class TestVisualization(unittest.TestCase):
         )
         generate_complexity_plot(df, save_path=str(self.root / "complexity"))
         self.assertTrue((self.root / "complexity.png").exists())
+
+    def test_complexity_analyzer_handles_subclassed_models(self) -> None:
+        analyzer = ModelComplexityAnalyzer(input_shape=(256, 256, 3), num_runs=1, num_warmup=1)
+        metrics = analyzer.analyze(UNetPlusPlus(deep_supervision=True))
+        self.assertIn("flops", metrics)
+        self.assertGreaterEqual(metrics["total_params"], 0)
 
     def test_latex_table_valid(self) -> None:
         df = pd.DataFrame({"Model": ["A"], "IoU": [0.9]})
