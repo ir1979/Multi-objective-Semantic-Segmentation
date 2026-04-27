@@ -60,7 +60,7 @@ mgda:
   log_alphas: true
 
 training:
-  epochs: 10
+  epochs: 10  # Change this to your desired number of epochs
   optimizer: "adam"
   learning_rate: 1.0e-4
   lr_scheduler:
