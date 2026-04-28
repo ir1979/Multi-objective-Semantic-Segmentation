@@ -1,0 +1,235 @@
+augmentation:
+  brightness_range: 0.1
+  contrast_range: 0.1
+  enabled: true
+  horizontal_flip: true
+  random_rotation: true
+  vertical_flip: true
+checkpointing:
+  auto_resume: true
+  best_metric: val_iou
+  max_resume_attempts: 3
+  save_best: true
+  save_every_n_epochs: 5
+  save_mgda_state: false
+  save_optimizer: true
+data:
+  batch_size: 4
+  building_density_bins: 3
+  image_size: 256
+  mask_dir: datasets/Mask
+  num_workers: 4
+  prefetch_buffer: 2
+  rgb_dir: datasets/RGB
+  test_ratio: 0.15
+  train_ratio: 0.7
+  val_ratio: 0.15
+evaluation:
+  metrics:
+  - iou
+  - dice
+  - precision
+  - recall
+  - pixel_accuracy
+  - boundary_iou
+  - boundary_f1
+  - compactness
+  pareto_objectives:
+  - direction: max
+    label: Region IoU
+    metric: iou
+  - direction: max
+    label: Boundary F1
+    metric: boundary_f1
+  - direction: max
+    label: Shape Compactness
+    metric: compactness
+export:
+  figure_dpi: 300
+  n_prediction_samples: 8
+  paper_output_dir: grid_search_results/paper_outputs
+  results_dir: grid_search_results
+  save_figures: true
+  save_model: true
+  save_predictions: true
+  save_tables: true
+grid_search:
+  auto_checkpoint: true
+  constraints:
+  - and_shape_loss_weight: 0.0
+    if_boundary_loss_weight: 0.0
+    then_skip: true
+  - and_encoder_filters:
+    - 64
+    - 128
+    - 256
+    - 512
+    - 1024
+    if_model_architecture: r2attunet
+    then_skip: true
+  - and_encoder_filters:
+    - 64
+    - 128
+    - 256
+    - 512
+    - 1024
+    if_model_architecture: attunet
+    then_skip: true
+  - and_encoder_filters:
+    - 64
+    - 128
+    - 256
+    - 512
+    - 1024
+    if_model_architecture: scse_unet
+    then_skip: true
+  - and_encoder_filters:
+    - 64
+    - 128
+    - 256
+    - 512
+    - 1024
+    if_model_architecture: resunet
+    then_skip: true
+  - and_encoder_filters:
+    - 64
+    - 128
+    - 256
+    - 512
+    - 1024
+    if_model_architecture: resunetpp
+    then_skip: true
+  - and_encoder_filters:
+    - 32
+    - 64
+    - 128
+    - 256
+    - 512
+    if_model_architecture: resunetpp
+    then_skip: true
+  - and_encoder_filters:
+    - 64
+    - 128
+    - 256
+    - 512
+    - 1024
+    if_model_architecture: unetpp
+    then_skip: true
+  enabled: true
+  intermediate_reporting: true
+  parameters:
+    boundary_loss_weight:
+    - 0.0
+    - 0.3
+    - 0.5
+    encoder_filters:
+    - - 64
+      - 128
+      - 256
+      - 512
+      - 1024
+    - - 32
+      - 64
+      - 128
+      - 256
+      - 512
+    - - 16
+      - 32
+      - 64
+      - 128
+      - 256
+    learning_rate:
+    - 0.0001
+    - 0.0005
+    - 0.001
+    model_architecture:
+    - unet
+    - unetpp
+    - attunet
+    - r2attunet
+    - seunet
+    - scse_unet
+    - resunet
+    - resunetpp
+    pixel_loss_type:
+    - bce
+    - bce_iou
+    - dice
+    shape_loss_weight:
+    - 0.0
+    - 0.1
+    - 0.2
+  replicate_points: 1
+  selection:
+    n_points: 36
+    random_seed: 42
+    strategy: random
+logging:
+  console_level: INFO
+  csv_logging: true
+  file_level: DEBUG
+  log_gradient_norms: false
+  log_mgda_alphas: false
+  tensorboard: false
+  validation_image_interval: 5
+loss:
+  boundary:
+    distance_threshold: 3
+    enabled: false
+    type: hausdorff_approx
+    weight: 0.0
+  deep_supervision:
+    enabled: false
+    weights:
+    - 0.5
+    - 0.3
+    - 0.2
+    - 0.1
+  pixel:
+    bce_iou_alpha: 0.5
+    type: bce_iou
+    weight: 1.0
+  shape:
+    enabled: true
+    type: convexity
+    weight: 0.1
+  strategy: weighted
+mgda:
+  enabled: false
+  log_alphas: false
+  max_iterations: 50
+  normalize_gradients: true
+  solver: frank_wolfe
+  tolerance: 1.0e-06
+model:
+  activation: relu
+  architecture: unetpp
+  batch_norm: true
+  deep_supervision: false
+  dropout_rate: 0.3
+  encoder_filters:
+  - 32
+  - 64
+  - 128
+  - 256
+  - 512
+  output_activation: sigmoid
+project:
+  deterministic: true
+  name: grid_search_moo
+  seed: 1000
+training:
+  early_stopping:
+    enabled: true
+    min_delta: 0.0001
+    mode: max
+    monitor: val_iou
+    patience: 10
+  epochs: 50
+  gradient_clip_norm: 1.0
+  learning_rate: 0.0001
+  lr_scheduler:
+    min_lr: 1.0e-07
+    type: cosine
+    warmup_epochs: 3
+  optimizer: adam

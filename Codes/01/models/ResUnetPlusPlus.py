@@ -124,9 +124,9 @@ def attetion_block(g, x):
 
 
 
-def ResUnetPlusPlus():
+def ResUnetPlusPlus(encoder_filters=None, summary=False):
     input_size=256
-    n_filters = [32, 64, 128, 256, 512]
+    n_filters = list(encoder_filters) if encoder_filters is not None else [32, 64, 128, 256, 512]
     inputs = Input((input_size, input_size, 3))
 
     c0 = inputs
@@ -163,6 +163,7 @@ def ResUnetPlusPlus():
 
         ## Model
     model = Model(inputs, outputs, name="ResUnetPlusPlus")
-    model.summary()
+    if summary:
+        model.summary()
 
     return model

@@ -39,14 +39,13 @@ def Attention_block(input1, input2, filters):
     return out
 
 
-def AttUNet():
+def AttUNet(encoder_filters=None, summary=False):
     nClasses=1
     input_height=256
     input_width=256
+    filters = list(encoder_filters) if encoder_filters is not None else [32, 64, 128, 256, 512]
 
     inputs = Input(shape=(input_height, input_width, 3))
-    n1 = 32
-    filters = [n1, n1 * 2, n1 * 4, n1 * 8, n1 * 16]
 
     e1 = conv_block(inputs, filters[0])
 
@@ -86,6 +85,7 @@ def AttUNet():
     out = Activation('sigmoid')(o)
     model = Model(inputs=inputs, outputs=out, name='AttUNet')
 
-    model.summary()
+    if summary:
+        model.summary()
 
     return model

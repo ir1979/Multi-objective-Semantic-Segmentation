@@ -1,219 +1,659 @@
-# Grid Search Configuration for Multi-Objective Semantic Segmentation
-# Defines the hyperparameter space for systematic experimentation
+# ==============================================================================
+# Grid Search Configuration
+# Multi-Objective Building Footprint Segmentation
+# ==============================================================================
+#
+# WHAT IS THIS FILE?
+#   This is the main configuration file for running a "grid search" experiment.
+#   A grid search automatically tries many different combinations of settings
+#   (called hyperparameters) and trains a model for each combination.
+#   After all runs finish, the results are compared to find the best settings.
+#
+# WHAT DOES THIS PROJECT DO?
+#   It trains neural networks to detect building footprints in satellite images.
+#   Input : an RGB aerial/satellite image (256x256 pixels)
+#   Output: a binary mask (white = building, black = background)
+#
+# HOW TO RUN:
+#   python run_grid_search.py --config configs/grid_search.yaml
+#
+# HOW RESULTS ARE STORED:
+#   Each combination of settings is called a "grid point".
+#   Results are saved under:  grid_search_results/point_000000/
+#                                                  point_000001/
+#                                                  ...
+# ==============================================================================
 
+# ==============================================================================
+# SECTION 1 — PROJECT SETTINGS
+# General settings that apply to the entire experiment.
+# ==============================================================================
 project:
+  # A short name for this experiment. Used in log files and output folders.
   name: "grid_search_moo"
-  seed: 42
+
+  # Random seed for reproducibility.
+  # Using the same seed guarantees that data splits, weight initialisation,
+  # and random sampling produce identical results every time you run.
+  # Change this if you want a different random draw.
+  seed: 1000
+
+  # If true, forces TensorFlow to use deterministic (non-random) operations.
+  # This makes results perfectly reproducible but can be slightly slower on GPU.
   deterministic: true
 
-# Grid Search Space Definition
+# ==============================================================================
+# SECTION 2 — GRID SEARCH SPACE
+# Defines WHICH hyperparameters to vary and WHAT values to try.
+#
+# The full Cartesian product is: 8 × 2 × 3 × 3 × 3 × 3 = 1296 combinations.
+# After removing invalid combinations (see "constraints" below) and random
+# sub-sampling (see "selection" below), only 36 combinations are actually run.
+# ==============================================================================
 grid_search:
+  # Set to false to skip the grid search and train only the base config below.
   enabled: true
-  # Save checkpoint after each point for resumability
-  auto_checkpoint: true
-  # Number of random seeds to try for each point (for robustness)
-  replicate_points: 1
-  # Whether to generate aggregated results after each batch
-  intermediate_reporting: true
-  
-  # Hyperparameters to search over (Cartesian product)
-  # Each key becomes a configuration variant
-  parameters:
-    
-    # Model Architecture
-    model_architecture:
-      - "unet"
-      - "unetpp"
-    
-    # Optimization Strategy
-    loss_strategy:
-      - "single"
-      - "weighted"
-      - "mgda"
-    
-    # Pixel Loss Configuration
-    pixel_loss_type:
-      - "bce"
-      - "bce_iou"
-      - "dice"
-    
-    # Boundary Loss Weight
-    boundary_loss_weight:
-      - 0.0
-      - 0.3
-      - 0.5
-    
-    # Shape Loss Weight
-    shape_loss_weight:
-      - 0.0
-      - 0.1
-      - 0.2
-    
-    # Learning Rate
-    learning_rate:
-      - 1.0e-4
-      - 5.0e-4
-      - 1.0e-3
-    
-    # Encoder Filters Configuration
-    encoder_filters:
-      - [64, 128, 256, 512, 1024]
-      - [32, 64, 128, 256, 512]
-    
-    # Dropout Rate
-    dropout_rate:
-      - 0.2
-      - 0.3
-      - 0.5
-    
-    # Deep Supervision (only for UNet++)
-    deep_supervision:
-      - false
-      - true
-    
-    # Batch Size
-    batch_size:
-      - 4
-      - 8
 
-  # Constraints to reduce search space (optional)
-  # Applied as filters after grid generation
+  # After every grid point finishes, save the current state to disk.
+  # This allows you to resume an interrupted run from where it stopped.
+  auto_checkpoint: true
+
+  # How many times to train each combination. 1 = train once.
+  # Increase to 3+ if you want to measure result variability (takes much longer).
+  replicate_points: 1
+
+  # Write a partial results report after every completed point, not just at the end.
+  # Useful for monitoring progress during a long run.
+  intermediate_reporting: true
+
+  # ----------------------------------------------------------------------------
+  # HYPERPARAMETERS TO SEARCH OVER
+  # Each key below is one hyperparameter. The list of values under each key
+  # are the options the grid search will try.
+  # ----------------------------------------------------------------------------
+  parameters:
+
+    # --------------------------------------------------------------------------
+    # 1. MODEL ARCHITECTURE
+    # Which neural network design to use. Each architecture has a different
+    # way of combining low-level details with high-level context.
+    #
+    # All architectures are encoder-decoder networks (like U-Net) that take
+    # a 256x256 RGB image as input and output a 256x256 binary mask.
+    # --------------------------------------------------------------------------
+    model_architecture:
+      - "unet"       # Standard U-Net (Ronneberger et al. 2015). The classic baseline.
+                     # Good balance of speed and accuracy. Best starting point.
+
+      - "unetpp"     # U-Net++ (nested dense skip connections).
+                     # Connects encoder and decoder at multiple scales.
+                     # Usually more accurate than plain U-Net, but uses more memory.
+
+      - "attunet"    # Attention U-Net.
+                     # Adds "attention gates" on the skip connections so the
+                     # network focuses on relevant regions (e.g. building edges).
+
+      - "r2attunet"  # Recurrent Residual Attention U-Net.
+                     # Combines attention gates with recurrent (LSTM-style) convolutions
+                     # and residual connections. Most complex; needs more GPU memory.
+
+      - "seunet"     # Squeeze-and-Excitation U-Net.
+                     # After each conv block, learns a weight per channel so
+                     # important feature maps are amplified and unimportant ones
+                     # are suppressed.
+
+      - "scse_unet"  # Spatial and Channel Squeeze-and-Excitation U-Net.
+                     # Like SE-UNet but applies both channel-wise AND spatial-wise
+                     # recalibration simultaneously.
+
+      - "resunet"    # Residual U-Net.
+                     # Replaces standard conv blocks with residual blocks
+                     # (like ResNet). Helps train deeper networks without
+                     # vanishing gradients.
+
+      - "resunetpp"  # Residual U-Net++ (combines residual blocks + nested connections).
+                     # Most parameter-heavy option. May run out of GPU memory
+                     # when used with "deep" encoder filters.
+
+    # --------------------------------------------------------------------------
+    # 2. NETWORK DEPTH  (encoder filter counts per stage)
+    # Controls how many feature maps (channels) each encoder level produces.
+    # The encoder has 5 levels. Each number is the channel count at that level.
+    #
+    # More channels → model learns richer features but uses more GPU memory
+    #                 and trains more slowly.
+    # Fewer channels → faster training, lower memory, but possibly less accurate.
+    # --------------------------------------------------------------------------
+    encoder_filters:
+      - [64, 128, 256, 512, 1024]  # "Deep":    large model, ~20M+ params (architecture-dependent)
+                                    #            May cause GPU out-of-memory for heavy architectures.
+      - [32, 64, 128, 256, 512]    # "Shallow": smaller model, faster, less memory.
+                                    #            Recommended when GPU memory is limited.
+      - [16, 32, 64, 128, 256]     # "Micro":   lightweight model for very heavy architectures
+                                    #            (resunetpp, r2attunet) that OOM even at shallow depth.
+
+    # --------------------------------------------------------------------------
+    # 3. PIXEL LOSS FUNCTION
+    # The main loss that measures how different each predicted pixel is from
+    # the ground-truth mask. All three options work on a per-pixel basis.
+    # --------------------------------------------------------------------------
+    pixel_loss_type:
+      - "bce"      # Binary Cross-Entropy. The standard sigmoid loss.
+                   # Fast and stable. Works well when classes are roughly balanced.
+
+      - "bce_iou"  # BCE + IoU Loss (weighted average, alpha=0.5).
+                   # Combines pixel-level accuracy (BCE) with region overlap (IoU).
+                   # Often the best choice for segmentation tasks.
+
+      - "dice"     # Dice Loss (= 1 - F1 score).
+                   # Directly optimises the overlap between prediction and ground truth.
+                   # Handles class imbalance well (useful when buildings are sparse).
+
+    # --------------------------------------------------------------------------
+    # 4. BOUNDARY LOSS WEIGHT
+    # An extra loss term that penalises errors near building edges more heavily.
+    # Uses an approximation of the Hausdorff distance between predicted and
+    # true boundaries.
+    #
+    # Total loss = pixel_loss + boundary_weight × boundary_loss + shape_weight × shape_loss
+    #
+    # 0.0 → boundary term is completely disabled (only pixel loss used)
+    # Higher values → the model is pushed to predict sharp, accurate edges
+    # --------------------------------------------------------------------------
+    boundary_loss_weight:
+      - 0.0   # Disabled. Only pixel loss is used.
+      - 0.3   # Moderate boundary emphasis. Usually a good starting point.
+      - 0.5   # Strong boundary emphasis. May improve edge accuracy but
+              # can destabilise training if too high.
+
+    # --------------------------------------------------------------------------
+    # 5. SHAPE LOSS WEIGHT
+    # An extra loss term that rewards geometrically regular (convex) predictions.
+    # Buildings are usually rectangular/convex, so this guides the model toward
+    # cleaner, more compact shapes.
+    #
+    # 0.0 → shape term disabled
+    # Higher values → stronger push toward convex/regular shapes
+    #
+    # NOTE: At least one of boundary_loss_weight or shape_loss_weight must be
+    # non-zero (see constraints below). Pure pixel-loss-only configurations
+    # are skipped to save compute.
+    # --------------------------------------------------------------------------
+    shape_loss_weight:
+      - 0.0   # Disabled. No shape regularisation.
+      - 0.1   # Mild shape regularisation.
+      - 0.2   # Moderate shape regularisation.
+
+    # --------------------------------------------------------------------------
+    # 6. INITIAL LEARNING RATE
+    # How large a step the optimiser takes when updating model weights.
+    #
+    # Too high → training becomes unstable (loss oscillates or diverges)
+    # Too low  → training is very slow or gets stuck in a bad local minimum
+    #
+    # The learning rate is NOT constant: it uses a cosine schedule (see
+    # "training" section below), so this is only the starting (peak) value.
+    # --------------------------------------------------------------------------
+    learning_rate:
+      - 1.0e-4   # 0.0001  — conservative/slow. Safe default.
+      - 5.0e-4   # 0.0005  — medium. Often the sweet spot for Adam.
+      - 1.0e-3   # 0.001   — aggressive/fast. May overshoot for large models.
+
+  # ----------------------------------------------------------------------------
+  # CONSTRAINTS
+  # Rules that remove invalid or redundant combinations BEFORE sampling.
+  # This reduces wasted compute.
+  # ----------------------------------------------------------------------------
   constraints:
-    # Only use deep supervision with UNetPP
-    - if_model_architecture: "unet"
-      then_not_deep_supervision: true
-    
-    # Don't search boundary+shape combos that are both zero
+    # If BOTH boundary_loss_weight AND shape_loss_weight are 0.0, that means
+    # the model only uses the pixel loss with no geometric supervision.
+    # This is covered by the standard (non-multi-objective) experiments, so
+    # we skip it here to avoid duplication.
     - if_boundary_loss_weight: 0.0
       and_shape_loss_weight: 0.0
       then_skip: true
 
-  # Point selection strategy
+    # ---------- OOM safety constraints ------------------------------------
+    # These architectures run out of GPU memory (12 GB RTX 4070) when deep
+    # filters [64,128,256,512,1024] are used.  Skip those combinations.
+    - if_model_architecture: "r2attunet"
+      and_encoder_filters: [64, 128, 256, 512, 1024]
+      then_skip: true
+
+    - if_model_architecture: "attunet"
+      and_encoder_filters: [64, 128, 256, 512, 1024]
+      then_skip: true
+
+    - if_model_architecture: "scse_unet"
+      and_encoder_filters: [64, 128, 256, 512, 1024]
+      then_skip: true
+
+    - if_model_architecture: "resunet"
+      and_encoder_filters: [64, 128, 256, 512, 1024]
+      then_skip: true
+
+    # resunetpp is very heavy: skip both deep AND shallow filters;
+    # only run it with the new micro-filter tier [16,32,64,128,256].
+    - if_model_architecture: "resunetpp"
+      and_encoder_filters: [64, 128, 256, 512, 1024]
+      then_skip: true
+
+    - if_model_architecture: "resunetpp"
+      and_encoder_filters: [32, 64, 128, 256, 512]
+      then_skip: true
+
+    # unetpp OOM'd once at shallow filters; constrain to shallow+micro only.
+    - if_model_architecture: "unetpp"
+      and_encoder_filters: [64, 128, 256, 512, 1024]
+      then_skip: true
+
+  # ----------------------------------------------------------------------------
+  # POINT SELECTION
+  # After generating all valid combinations, this controls how many and which
+  # ones are actually trained.
+  # ----------------------------------------------------------------------------
   selection:
-    # "full": Generate all combinations (Cartesian product)
-    # "random": Randomly sample N points
-    # "latin_hypercube": Latin hypercube sampling
+    # How to pick the points to run:
+    #   "full"            – run every valid combination (can be thousands)
+    #   "random"          – pick n_points at random (fastest to set up)
+    #   "latin_hypercube" – space points evenly across the parameter space
+    #                       (better coverage than pure random)
     strategy: "random"
-    
-    # For random/latin_hypercube: number of points to sample
-    n_points: 50
-    
-    # Random seed for reproducible sampling
+
+    # Number of grid points (configurations) to actually train.
+    # 36 is about 11% of the constrained space — enough to see trends without
+    # running for days. Increase for more thorough coverage.
+    n_points: 36
+
+    # Seed for the random point selection. Changing this gives a different
+    # random subset of configurations.
     random_seed: 42
 
-# Model Base Configuration (defaults; overridden per-point by grid parameters)
+# ==============================================================================
+# SECTION 3 — BASE MODEL CONFIGURATION
+# Default model settings. The grid search OVERRIDES architecture and
+# encoder_filters for each point. The other fields (dropout_rate, batch_norm,
+# etc.) are fixed across all points.
+# ==============================================================================
 model:
+  # Default architecture (overridden by grid search for each point).
   architecture: "unet"
+
+  # Default encoder filter counts (overridden by grid search for each point).
   encoder_filters: [64, 128, 256, 512, 1024]
+
+  # Probability of randomly zeroing activations during training to prevent
+  # overfitting. 0.3 = 30% of neurons are randomly dropped each forward pass.
+  # Only used by architectures that support this parameter (unet, unetpp).
   dropout_rate: 0.3
+
+  # Whether to use Batch Normalisation after each convolution layer.
+  # Highly recommended: speeds up training and improves stability.
   batch_norm: true
+
+  # Non-linear activation function used inside each convolution block.
+  # "relu" is the standard choice for segmentation networks.
   activation: "relu"
+
+  # Activation function on the final output layer.
+  # "sigmoid" squashes output to [0, 1], where values > 0.5 become "building".
   output_activation: "sigmoid"
+
+  # Deep supervision: compute loss at multiple decoder levels (for U-Net++).
+  # Disabled here; the grid search does not search over this.
   deep_supervision: false
 
-# Loss Base Configuration (defaults; overridden per-point by grid parameters)
+# ==============================================================================
+# SECTION 4 — LOSS FUNCTION CONFIGURATION
+# These are the DEFAULT weights and types. The grid search overrides
+# pixel.type, boundary.weight, and shape.weight for each point.
+#
+# TOTAL LOSS = pixel_loss  +  boundary_weight × boundary_loss
+#                          +  shape_weight    × shape_loss
+# ==============================================================================
 loss:
-  strategy: "single"
+  # Always use "weighted" (weighted sum of all active loss terms).
+  # The other option "mgda" is disabled below.
+  strategy: "weighted"
+
+  # ---------- Pixel loss (main term) -----------------------------------------
   pixel:
+    # Default type – overridden per grid point.
     type: "bce_iou"
+
+    # Multiplier for the pixel loss in the total loss sum. Keep at 1.0.
     weight: 1.0
+
+    # Only used when type = "bce_iou".
+    # alpha=0.5 means: total_pixel_loss = 0.5 × BCE + 0.5 × IoU_loss
     bce_iou_alpha: 0.5
+
+  # ---------- Boundary loss (edge accuracy term) -----------------------------
   boundary:
+    # Whether the boundary term is active at all.
+    # In practice the grid search sets weight=0.0 to disable it, so keep true.
     enabled: true
+
+    # Loss type: "hausdorff_approx" penalises the distance between the
+    # predicted boundary pixels and the true boundary pixels.
     type: "hausdorff_approx"
+
+    # Default weight – overridden per grid point.
     weight: 0.3
+
+    # Pixels within this many pixels of a building edge are considered
+    # "boundary pixels". Larger values = wider band around edges.
     distance_threshold: 3
+
+  # ---------- Shape loss (geometric regularity term) -------------------------
   shape:
     enabled: true
+
+    # "convexity" rewards predictions that are convex (no concave dents).
+    # Buildings are mostly rectangular/convex so this is a natural prior.
     type: "convexity"
+
+    # Default weight – overridden per grid point.
     weight: 0.1
+
+  # ---------- Deep supervision (only relevant for U-Net++) -------------------
   deep_supervision:
+    # Disabled in the grid search. Kept here so the trainer code doesn't crash.
     enabled: false
+
+    # Weights applied to the loss at each intermediate decoder output level.
+    # [0.5, 0.3, 0.2, 0.1] means the deepest level contributes 50%, next 30%, etc.
     weights: [0.5, 0.3, 0.2, 0.1]
 
-# MGDA Base Configuration
+# ==============================================================================
+# SECTION 5 — MGDA (Multi-Gradient Descent Algorithm)
+# An advanced multi-objective optimisation method that automatically balances
+# multiple loss terms each step without manual weights.
+# DISABLED in this grid search (we use simple weighted sum instead).
+# Kept here only so that trainer.py does not crash on import.
+# ==============================================================================
 mgda:
   enabled: false
-  solver: "frank_wolfe"
-  max_iterations: 50
-  tolerance: 1.0e-6
-  normalize_gradients: true
-  log_alphas: true
+  solver: "frank_wolfe"      # Optimisation solver for finding Pareto-optimal weights.
+  max_iterations: 50         # Max MGDA inner loop steps per training step.
+  tolerance: 1.0e-6          # Convergence threshold for the inner loop.
+  normalize_gradients: true  # Normalise task gradients before solving (recommended).
+  log_alphas: false          # Whether to log the per-task weights to TensorBoard.
 
-# Data Configuration
+# ==============================================================================
+# SECTION 6 — DATA SETTINGS
+# Where the dataset lives and how to load it.
+# ==============================================================================
 data:
+  # Path to the folder containing RGB satellite images (relative to project root).
+  # Each file should be a .png or .tif with 3 colour channels (Red, Green, Blue).
   rgb_dir: "datasets/RGB"
+
+  # Path to the folder containing binary segmentation masks.
+  # Each mask is a grayscale image where white (255) = building, black (0) = background.
+  # Each mask file must have the same name as its corresponding RGB image.
   mask_dir: "datasets/Mask"
+
+  # All images are resized to this square size (pixels) before training.
+  # 256 is a common choice: large enough to capture building shapes,
+  # small enough to fit many images in GPU memory.
   image_size: 256
+
+  # Number of images fed to the model in one training step.
+  # Larger batch → more stable gradient estimates but uses more GPU memory.
+  # If you get out-of-memory errors, reduce this to 2 or 1.
   batch_size: 4
-  train_ratio: 0.70
-  val_ratio: 0.15
-  test_ratio: 0.15
+
+  # What fraction of images to use for each split:
+  #   train  – used to update model weights
+  #   val    – used to monitor accuracy during training (not used for updates)
+  #   test   – held out completely; only evaluated once training is done
+  train_ratio: 0.70    # 70% of images for training
+  val_ratio:   0.15    # 15% for validation
+  test_ratio:  0.15    # 15% for final testing
+
+  # Number of background worker threads that pre-load images while the GPU trains.
+  # Increase if your CPU is fast and disk is the bottleneck.
   num_workers: 4
+
+  # How many batches to prepare in advance ("prefetch") so the GPU is never idle.
   prefetch_buffer: 2
+
+  # Number of building-density bins used for stratified splitting.
+  # Images are sorted by how many building pixels they contain, divided into 3 bins,
+  # and each split (train/val/test) gets a proportional share from each bin.
+  # This prevents all "dense building" images accidentally ending up in test only.
   building_density_bins: 3
 
-# Augmentation Configuration
+# ==============================================================================
+# SECTION 7 — DATA AUGMENTATION
+# Artificially increases the effective training set size by creating slightly
+# modified versions of each training image on-the-fly.
+# Augmentation is only applied to the training set, never to val or test.
+# ==============================================================================
 augmentation:
+  # Set to false to disable all augmentation (useful for debugging).
   enabled: true
+
+  # Randomly flip images left-right (50% probability each step).
   horizontal_flip: true
+
+  # Randomly flip images upside-down (50% probability each step).
   vertical_flip: true
+
+  # Randomly rotate images by a small random angle.
   random_rotation: true
+
+  # Randomly adjust image brightness by ±10%.
+  # Simulates different lighting / sun angles in satellite imagery.
   brightness_range: 0.1
+
+  # Randomly adjust image contrast by ±10%.
+  # Simulates haze, sensor differences, or seasonal variation.
   contrast_range: 0.1
 
-# Training Configuration (can be overridden by grid parameters)
+# ==============================================================================
+# SECTION 8 — TRAINING SETTINGS
+# How the model is trained: how many epochs, which optimiser, learning rate
+# schedule, early stopping, and gradient clipping.
+# ==============================================================================
 training:
-  epochs: 10
+  # Maximum number of full passes through the training data.
+  # Training may stop earlier if early_stopping triggers.
+  epochs: 50
+
+  # Optimisation algorithm used to update model weights.
+  # "adam" (Adaptive Moment Estimation) is the standard choice for deep learning.
   optimizer: "adam"
+
+  # Learning rate schedule: the learning rate changes during training rather
+  # than staying constant. This usually improves final accuracy.
   lr_scheduler:
+    # "cosine": the learning rate starts at the value in the grid search,
+    # rises during warm-up epochs, then decreases smoothly following a
+    # cosine curve down to min_lr.
     type: "cosine"
-    warmup_epochs: 2
+
+    # Number of warm-up epochs at the start of training.
+    # During warm-up, the learning rate increases linearly from 0 to the
+    # starting value. This prevents large gradient updates on a randomly
+    # initialised model from destabilising early training.
+    warmup_epochs: 3
+
+    # The learning rate never goes below this value (even at epoch 50).
     min_lr: 1.0e-7
+
+  # Early stopping: automatically stop training when the model stops improving.
+  # This prevents wasting time training for all 50 epochs if the model has
+  # already converged.
   early_stopping:
     enabled: true
+
+    # Which metric to watch for improvement.
+    # "val_iou" = Intersection over Union on the validation set (higher is better).
     monitor: "val_iou"
-    patience: 5
+
+    # Stop training if val_iou has not improved for this many consecutive epochs.
+    patience: 10
+
+    # "max" means we want the monitored metric to increase (higher = better).
     mode: "max"
+
+    # Minimum improvement required to count as "getting better".
+    # Improvements smaller than 0.0001 are ignored (treated as no change).
     min_delta: 1.0e-4
+
+  # Gradient clipping: if the gradient magnitude exceeds this value, it is
+  # scaled down to prevent exploding gradients (a common training instability).
+  # 1.0 is a conservative, safe default.
   gradient_clip_norm: 1.0
 
-# Checkpointing Configuration
+# ==============================================================================
+# SECTION 9 — CHECKPOINTING
+# Controls when model weights are saved to disk so that training can be
+# resumed after a crash, and so the best model can be restored.
+# ==============================================================================
 checkpointing:
-  save_every_n_epochs: 2
+  # Save a checkpoint every N epochs regardless of performance.
+  save_every_n_epochs: 5
+
+  # Additionally save whenever the validation metric improves (best model so far).
   save_best: true
+
+  # Which metric determines the "best" model. Must match early_stopping.monitor.
   best_metric: "val_iou"
+
+  # Also save the optimiser state (Adam momentum terms) so training resumes
+  # exactly from where it left off.
   save_optimizer: true
-  save_mgda_state: true
-  # For grid search: more frequent checkpointing for recovery
+
+  # MGDA state is not used in grid search; keep false.
+  save_mgda_state: false
+
+  # If a checkpoint exists when the script starts, automatically load it
+  # and continue training from the last saved epoch.
   auto_resume: true
+
+  # Maximum number of times to attempt auto-resume before giving up.
   max_resume_attempts: 3
 
-# Logging Configuration
+# ==============================================================================
+# SECTION 10 — LOGGING
+# Controls what information is written to the console and log files.
+# ==============================================================================
 logging:
+  # Verbosity level printed to the terminal.
+  # "INFO" shows progress (epoch results, timings, etc.).
+  # Use "DEBUG" to see detailed internals (much more output).
   console_level: "INFO"
+
+  # Verbosity level written to the log FILE (more detailed than console is fine).
   file_level: "DEBUG"
-  tensorboard: false  # Disable for grid search to reduce I/O
+
+  # Set to true to enable TensorBoard logging (loss curves, images, histograms).
+  # View with: tensorboard --logdir grid_search_results/
+  tensorboard: false
+
+  # Write training metrics to a CSV file per grid point for easy analysis in Excel.
   csv_logging: true
+
+  # Log the norm of gradients each epoch (useful for diagnosing vanishing/exploding
+  # gradients, but adds overhead).
   log_gradient_norms: false
-  log_mgda_alphas: true
-  validation_image_interval: 0  # Disable for faster grid search
 
-# Evaluation Configuration
+  # Log MGDA alpha weights (not used since MGDA is disabled).
+  log_mgda_alphas: false
+
+  # Save prediction image panels (RGB | GT | Prediction | TP/FP/FN) to disk
+  # every N validation epochs during training. 0 = never.
+  validation_image_interval: 5
+
+# ==============================================================================
+# SECTION 11 — EVALUATION
+# Defines which metrics are computed on the TEST set after training finishes.
+# These metrics are the basis for comparing all grid points and finding
+# the Pareto-optimal configurations.
+# ==============================================================================
 evaluation:
+  # List of metrics computed on the held-out test split for each grid point.
   metrics:
-    - "iou"
-    - "dice"
-    - "precision"
-    - "recall"
-    - "boundary_f1"
+    - "iou"            # Intersection over Union: the standard segmentation metric.
+                       # (true positives) / (true positives + false positives + false negatives)
+                       # Range: 0.0 (no overlap) to 1.0 (perfect).
 
-# Export Configuration
+    - "dice"           # Dice coefficient (= F1 score of pixel classification).
+                       # Similar to IoU but slightly more lenient. Range: 0–1.
+
+    - "precision"      # Of all pixels predicted as "building", what fraction
+                       # actually is a building? High precision = few false alarms.
+
+    - "recall"         # Of all actual building pixels, what fraction did the
+                       # model find? High recall = few missed buildings.
+
+    - "pixel_accuracy" # Fraction of all pixels (building + background) classified
+                       # correctly. Can be misleading when background dominates.
+
+    - "boundary_iou"   # IoU computed only within a narrow band around building edges.
+                       # Measures how accurately the model traces building outlines.
+
+    - "boundary_f1"    # F1 score of boundary pixels specifically.
+                       # A high boundary_f1 means edges are crisp and correctly placed.
+
+    - "compactness"    # Measures how geometrically regular (square/convex) the
+                       # predicted building shapes are.
+                       # Formula: 4π × area / perimeter².  Range: 0 (irregular) to 1 (circle).
+
+  # Pareto front: after all grid points finish, find configurations that are
+  # NOT dominated — i.e. no other config is better on ALL three objectives
+  # simultaneously. These are the "best trade-off" configurations.
+  #
+  # Think of it like shopping: you might prefer a cheap+fast option over
+  # an expensive+fast one, but cheap+fast vs. expensive+accurate are both
+  # "on the Pareto front" because neither is strictly better on all criteria.
+  pareto_objectives:
+    - metric: "iou"
+      direction: "max"   # Higher is better.
+      label: "Region IoU"
+
+    - metric: "boundary_f1"
+      direction: "max"
+      label: "Boundary F1"
+
+    - metric: "compactness"
+      direction: "max"
+      label: "Shape Compactness"
+
+# ==============================================================================
+# SECTION 12 — EXPORT / OUTPUT FILES
+# Controls what files are saved after the grid search completes.
+# ==============================================================================
 export:
+  # Root folder where all results are saved.
+  # Each grid point gets its own sub-folder: grid_search_results/point_000000/
   results_dir: "grid_search_results"
+
+  # Save the trained Keras model weights (.h5 or SavedModel) for each point.
+  # Needed if you want to run inference later with a specific configuration.
   save_model: true
-  save_predictions: false  # Disable for faster grid search
+
+  # Save visual prediction panels for a sample of test images.
+  # Each panel contains 4 side-by-side images:
+  #   [RGB input] | [Ground-truth mask] | [Prediction] | [TP/FP/FN overlay]
+  save_predictions: true
+
+  # How many test images to visualise per grid point.
+  # 8 gives a good overview without filling the disk.
+  n_prediction_samples: 8
+
+  # Save summary plots (Pareto front scatter, metric bar charts, etc.).
   save_figures: true
+
+  # Save metric comparison tables as CSV and LaTeX files.
   save_tables: true
-  figure_dpi: 150  # Lower DPI for grid search speed
+
+  # Resolution (dots per inch) for saved figures. 300 DPI = print quality.
+  figure_dpi: 300
+
+  # Where to write the paper-ready outputs (LaTeX tables, high-res figures).
   paper_output_dir: "grid_search_results/paper_outputs"
+

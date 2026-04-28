@@ -1,4 +1,0 @@
-inherits: ../unetpp_mgda.yaml
-
-loss:
-  strategy: "weighted"

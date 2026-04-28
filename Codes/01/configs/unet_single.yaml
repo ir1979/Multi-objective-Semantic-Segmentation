@@ -1,5 +1,0 @@
-inherits: default.yaml
-model:
-  architecture: "unet"
-loss:
-  strategy: "single"

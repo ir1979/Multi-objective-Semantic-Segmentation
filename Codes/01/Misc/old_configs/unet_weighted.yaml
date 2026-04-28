@@ -1,0 +1,10 @@
+inherits: "default.yaml"
+
+model:
+  architecture: "unet"
+
+loss:
+  strategy: "weighted"
+
+mgda:
+  enabled: false

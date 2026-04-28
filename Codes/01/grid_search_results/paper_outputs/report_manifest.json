@@ -1,0 +1,38 @@
+{
+  "generated_at": "2026-04-28T16:13:36.383101",
+  "n_configurations": 36,
+  "tables": {
+    "csv_all": "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\tables\\results_all.csv",
+    "latex_main": "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\tables\\results_main.tex",
+    "latex_ablation": "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\tables\\hyperparameter_ablation.tex",
+    "pareto_csv": "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\tables\\pareto_front.csv",
+    "pareto_tex": "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\tables\\pareto_front.tex",
+    "pareto_per_arch_tex": "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\tables\\pareto_per_architecture.tex"
+  },
+  "n_pareto_points": 1,
+  "figures": {
+    "pareto_scatter": [
+      "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\figures\\pareto_iou_vs_boundary.png",
+      "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\figures\\pareto_iou_vs_compactness.png",
+      "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\figures\\pareto_boundary_vs_compactness.png"
+    ],
+    "pareto_combined": "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\figures\\pareto_combined.png",
+    "pareto_3d": "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\figures\\pareto_3d.png",
+    "metric_boxplots": [
+      "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\figures\\comparison_by_model_architecture.png",
+      "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\figures\\comparison_by_encoder_filters.png",
+      "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\figures\\comparison_by_pixel_loss_type.png",
+      "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\figures\\comparison_by_boundary_loss_weight.png",
+      "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\figures\\comparison_by_shape_loss_weight.png",
+      "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\figures\\comparison_by_learning_rate.png"
+    ],
+    "prediction_grid": null
+  },
+  "diagnostics": {
+    "plots": [
+      "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\diagnostics\\metric_distributions.png",
+      "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\diagnostics\\correlation_matrix.png"
+    ],
+    "summary_statistics": "C:\\Users\\Reza Mortazavi\\Dropbox\\Research\\Collaborations\\Mr Khoshnevisan\\Multi-objective Semantic Segmentation\\Codes\\01\\grid_search_results\\paper_outputs\\diagnostics\\summary_statistics.json"
+  }
+}

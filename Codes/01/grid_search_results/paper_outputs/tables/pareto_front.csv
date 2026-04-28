@@ -1,0 +1,2 @@
+point_id,boundary_loss_weight,encoder_filters,learning_rate,model_architecture,pixel_loss_type,shape_loss_weight,train_loss,val_iou,test_iou,test_dice,test_precision,test_recall,test_pixel_acc,test_boundary_iou,test_boundary_f1,test_compactness,best_epoch,total_epochs,stopped_early,result_dir
+25,0.3,micro,0.001,seunet,bce,0.1,0.26019155979156494,0.44886015355587006,0.4506799131631851,0.6212843656539917,0.7431802153587341,0.5352501273155212,0.8835099637508392,0.14511104673147202,0.2534230798482895,0.00027883054281119257,50,50,False,grid_search_results/point_000025

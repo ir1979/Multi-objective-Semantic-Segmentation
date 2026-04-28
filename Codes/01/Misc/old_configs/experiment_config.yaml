@@ -1,0 +1,79 @@
+# Multi-Objective Optimization Configuration
+# Building Footprint Recognition from Aerial/Satellite Imagery
+
+experiment:
+  name: "building_footprint_moo"
+  seed: [42, 123, 456]
+  description: "Multi-objective optimization for building footprint extraction using semantic segmentation"
+  save_predictions: true
+  save_checkpoints: true
+
+dataset:
+  name: "Inria Aerial"
+  rgb_path: "datasets/RGB"
+  mask_path: "datasets/Mask"
+  tile_size: [256, 512]
+  augmentations:
+    - [flip, rotate]
+    - [flip, rotate, brightness]
+    - [flip, rotate, brightness, elastic_transform]
+  train_val_test_split: [0.7, 0.15, 0.15]
+  normalize: true
+  preload: false
+
+models:
+  architectures: [Unet, UnetPlusPlus, FPN, Linknet]
+  encoders: [resnet34, resnet50, efficientnetb0, efficientnetb3]
+  encoder_weights: [imagenet]
+  activation: sigmoid
+  deep_supervision: false
+
+training:
+  loss_functions: [binary_crossentropy, dice_loss, focal_loss, combo_loss]
+  optimizers: [Adam, SGD]
+  learning_rates: [1e-3, 1e-4, 5e-4]
+  batch_sizes: [8, 16]
+  epochs: [50, 100]
+  schedulers: [ReduceLROnPlateau, CosineAnnealing]
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 0.001
+  mixed_precision: true
+
+multi_objective:
+  objectives: [paper_quality, boundary_iou, param_count, inference_time]
+  optimization_method: "NSGA-II"  # Options: "NSGA-II", "grid_search"
+  population_size: 50
+  generations: 100
+  evaluation_epochs: 1
+  quick_max_configs: 4
+  quick_inference_runs: 5
+  quick_warmup_runs: 2
+  crossover_prob: 0.9
+  mutation_prob: 0.1
+  pareto_front: true
+  reference_point: [0.0, 0.0, 1e9, 1e12, 1000]  # For hypervolume calculation
+
+extensions:
+  plugin_modules:
+    - plugins.objectives
+    - plugins.models
+
+evaluation:
+  metrics:
+    - iou
+    - f1_score
+    - precision
+    - recall
+    - accuracy
+    - boundary_iou
+    - boundary_f1
+  inference_runs: 100
+  warmup_runs: 10
+
+output:
+  base_dir: "outputs"
+  save_format: "png"
+  dpi: 300
+  figure_format: "publication"  # Options: "publication", "presentation"

@@ -59,18 +59,15 @@ def RRCNN_block(input, channel, t=2):
 
 
 
-def R2AttUNet():
+def R2AttUNet(encoder_filters=None, summary=False):
     nClasses=1
     input_height=256
     input_width=256
-    # """
-    #Residual Recuurent Block with attention Unet
-    #Implementation : https://github.com/LeeJunHyun/Image_Segmentation
-    #"""
+    # Residual Recurrent Block with Attention U-Net
+    # Implementation: https://github.com/LeeJunHyun/Image_Segmentation
+    filters = list(encoder_filters) if encoder_filters is not None else [32, 64, 128, 256, 512]
     inputs = Input(shape=(input_height, input_width, 3))
     t = 2
-    n1 = 32
-    filters = [n1, n1 * 2, n1 * 4, n1 * 8, n1 * 16]
 
     e1 = RRCNN_block(inputs, filters[0], t=t)
 
@@ -109,6 +106,7 @@ def R2AttUNet():
     o = Conv2D(nClasses, (3, 3), padding='same')(d2)
     out = Activation('sigmoid')(o)
     model = Model(inputs=inputs, outputs=out, name='R2AttUNet')
-    model.summary()
+    if summary:
+        model.summary()
 
     return model

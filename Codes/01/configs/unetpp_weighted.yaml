@@ -1,8 +1,0 @@
-inherits: "default.yaml"
-
-model:
-  architecture: "unetpp"
-  deep_supervision: false
-
-loss:
-  strategy: "weighted"

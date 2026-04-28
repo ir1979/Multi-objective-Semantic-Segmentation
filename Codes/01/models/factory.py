@@ -8,6 +8,12 @@ import tensorflow as tf
 
 from models.unet import UNet
 from models.unetpp import UNetPlusPlus
+from models.AttUNet import AttUNet
+from models.R2AttUNet import R2AttUNet
+from models.SEUnet import SEUnet
+from models.scSEUnet import scSEUnet
+from models.ResUnet import ResUnet
+from models.ResUnetPlusPlus import ResUnetPlusPlus
 
 
 def get_model(config: Mapping[str, Any]) -> tf.keras.Model:
@@ -39,4 +45,20 @@ def get_model(config: Mapping[str, Any]) -> tf.keras.Model:
     if architecture == "unetpp":
         kwargs["deep_supervision"] = bool(model_cfg.get("deep_supervision", False))
         return UNetPlusPlus(**kwargs)
-    raise ValueError(f"Unknown architecture '{architecture}'. Expected one of ['unet', 'unetpp'].")
+    if architecture == "attunet":
+        return AttUNet(encoder_filters=filters)
+    if architecture == "r2attunet":
+        return R2AttUNet(encoder_filters=filters)
+    if architecture == "seunet":
+        return SEUnet(encoder_filters=filters)
+    if architecture == "scse_unet":
+        return scSEUnet(encoder_filters=filters)
+    if architecture == "resunet":
+        return ResUnet(encoder_filters=filters)
+    if architecture == "resunetpp":
+        return ResUnetPlusPlus(encoder_filters=filters)
+    raise ValueError(
+        f"Unknown architecture '{architecture}'. "
+        "Expected one of ['unet', 'unetpp', 'attunet', 'r2attunet', "
+        "'seunet', 'scse_unet', 'resunet', 'resunetpp']."
+    )

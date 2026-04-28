@@ -56,11 +56,9 @@ def main() -> int:
                 logger.error(f"State file not found: {state_file}")
                 return 1
 
-            aggregator = GridSearchResultsAggregator(state_file, results_dir / "reports")
-            report_files = aggregator.generate_full_report()
-            logger.info(f"Generated {len(report_files)} report files")
-            for name, path in report_files.items():
-                logger.info(f"  - {name}: {path}")
+            aggregator = GridSearchResultsAggregator(state_file, results_dir / "paper_outputs")
+            manifest = aggregator.generate_full_paper_report()
+            logger.info(f"Paper report complete. {len(manifest)} top-level sections")
             return 0
 
         # Initialize grid search runner
@@ -84,21 +82,19 @@ def main() -> int:
         logger.info("=" * 80)
 
         state_file = results_dir / "grid_search_state.json"
-        report_dir = results_dir / "reports"
-        report_dir.mkdir(parents=True, exist_ok=True)
+        paper_dir = results_dir / "paper_outputs"
+        paper_dir.mkdir(parents=True, exist_ok=True)
 
-        aggregator = GridSearchResultsAggregator(state_file, report_dir)
-        report_files = aggregator.generate_full_report()
+        aggregator = GridSearchResultsAggregator(state_file, paper_dir)
+        manifest = aggregator.generate_full_paper_report()
 
-        logger.info(f"\nGenerated {len(report_files)} report files:")
-        for name, path in report_files.items():
-            logger.info(f"  - {name}: {path}")
+        logger.info(f"\nPaper report complete. Manifest written to {paper_dir / 'report_manifest.json'}")
 
         # Print best configurations
-        best = aggregator.get_best_configurations(n=5)
-        if not best.empty:
-            logger.info("\nTop 5 Configurations:")
-            logger.info(best.to_string())
+        if not aggregator.df.empty:
+            top5 = aggregator.df.nlargest(5, "test_iou")[["model_architecture", "encoder_filters", "pixel_loss_type", "test_iou", "test_boundary_f1"]]
+            logger.info("\nTop 5 Configurations by IoU:")
+            logger.info(top5.to_string())
 
         elapsed = time.time() - start_time
         logger.info("\n" + "=" * 80)

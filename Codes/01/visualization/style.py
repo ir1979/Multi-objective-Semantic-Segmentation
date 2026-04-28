@@ -27,16 +27,25 @@ JOURNAL_STYLE = {
 }
 
 COLORS = {
-    "unet_single": "#1f77b4",
-    "unet_weighted": "#ff7f0e",
-    "unet_mgda": "#2ca02c",
-    "unetpp_single": "#d62728",
-    "unetpp_weighted": "#9467bd",
-    "unetpp_mgda": "#8c564b",
-    "unetpp_deepsup": "#e377c2",
-    "pareto_dominated": "#cccccc",
-    "pareto_front": "#e74c3c",
-    "mgda_point": "#2ecc71",
+    # Architecture colours
+    "unet":              "#1f77b4",
+    "unetpp":            "#d62728",
+    "attunet":           "#8c564b",
+    "r2attunet":         "#e377c2",
+    "seunet":            "#7f7f7f",
+    "scse_unet":         "#aec7e8",
+    "resunet":           "#98df8a",
+    "resunetpp":         "#c5b0d5",
+    # Pixel-loss colours
+    "bce":               "#2ca02c",
+    "bce_iou":           "#ff7f0e",
+    "dice":              "#9467bd",
+    # Encoder-depth colours
+    "deep":              "#17becf",
+    "shallow":           "#bcbd22",
+    # Pareto plot colours
+    "pareto_dominated":  "#cccccc",
+    "pareto_front":      "#e74c3c",
 }
 
 

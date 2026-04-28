@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import time
 import traceback
@@ -25,13 +26,74 @@ from training.trainer import Trainer
 from utils.error_handling import ErrorHandler, RecoveryStrategy
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _save_prediction_samples(
+    model: Any,
+    dataset: Any,
+    n_samples: int,
+    save_dir: Path,
+    point_label: str = "",
+) -> None:
+    """Save RGB / GT-mask / prediction / TP-FP-FN overlay panels for each sample."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import tensorflow as tf  # imported here to avoid circular TF init at module level
+
+    save_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for x_batch, y_batch in dataset:
+        y_pred = model(x_batch, training=False)
+        if isinstance(y_pred, (list, tuple)):
+            y_pred = y_pred[-1]
+        y_pred_np = (y_pred.numpy() > 0.5).astype(np.float32)
+
+        for i in range(int(x_batch.shape[0])):
+            if count >= n_samples:
+                break
+            img = np.clip(x_batch[i].numpy(), 0.0, 1.0)
+            gt = y_batch[i].numpy().squeeze()
+            pred = y_pred_np[i].squeeze()
+
+            # TP/FP/FN colour overlay
+            overlay = img.copy()
+            tp = (gt > 0.5) & (pred > 0.5)
+            fp = (gt <= 0.5) & (pred > 0.5)
+            fn = (gt > 0.5) & (pred <= 0.5)
+            overlay[tp] = overlay[tp] * 0.35 + np.array([0.0, 0.82, 0.0]) * 0.65
+            overlay[fp] = overlay[fp] * 0.35 + np.array([0.9, 0.1, 0.1]) * 0.65
+            overlay[fn] = overlay[fn] * 0.35 + np.array([0.1, 0.1, 0.9]) * 0.65
+
+            fig, axes = plt.subplots(1, 4, figsize=(14, 3.5))
+            axes[0].imshow(img);              axes[0].set_title("RGB Input",     fontsize=9); axes[0].axis("off")
+            axes[1].imshow(gt,   cmap="gray", vmin=0, vmax=1); axes[1].set_title("Ground Truth",  fontsize=9); axes[1].axis("off")
+            axes[2].imshow(pred, cmap="gray", vmin=0, vmax=1); axes[2].set_title("Prediction",    fontsize=9); axes[2].axis("off")
+            axes[3].imshow(overlay);          axes[3].set_title("TP/FP/FN\n(G/R/B)", fontsize=9); axes[3].axis("off")
+
+            if point_label:
+                fig.suptitle(point_label, fontsize=9, y=1.01)
+            plt.tight_layout()
+            fig.savefig(save_dir / f"sample_{count:03d}.png", dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            count += 1
+        if count >= n_samples:
+            break
+
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+
 @dataclass
 class GridPoint:
     """Single configuration point in grid search space."""
 
     point_id: int
     params: Dict[str, Any]
-    status: str = "pending"  # pending, running, completed, failed, skipped
+    status: str = "pending"  # pending | running | completed | failed | skipped
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     error_message: Optional[str] = None
@@ -40,7 +102,6 @@ class GridPoint:
     metrics: Dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize to dictionary."""
         return {
             "point_id": self.point_id,
             "params": self.params,
@@ -54,7 +115,6 @@ class GridPoint:
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> GridPoint:
-        """Deserialize from dictionary."""
         return GridPoint(
             point_id=data["point_id"],
             params=data["params"],
@@ -69,7 +129,7 @@ class GridPoint:
 
 
 class GridSearchState:
-    """Persistent state management for grid search resumability."""
+    """Persistent JSON-backed state management for resumability."""
 
     def __init__(self, state_file: Path) -> None:
         self.state_file = Path(state_file)
@@ -78,14 +138,12 @@ class GridSearchState:
         self._load_or_init()
 
     def _load_or_init(self) -> None:
-        """Load existing state or initialize new one."""
         if self.state_file.exists():
             with open(self.state_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 self.points = {int(k): GridPoint.from_dict(v) for k, v in data.items()}
 
     def save(self) -> None:
-        """Persist state to disk."""
         with open(self.state_file, "w", encoding="utf-8") as f:
             json.dump(
                 {str(k): v.to_dict() for k, v in self.points.items()},
@@ -95,40 +153,34 @@ class GridSearchState:
             )
 
     def add_point(self, point: GridPoint) -> None:
-        """Add or update a grid point."""
         self.points[point.point_id] = point
         self.save()
 
     def get_point(self, point_id: int) -> Optional[GridPoint]:
-        """Retrieve a grid point."""
         return self.points.get(point_id)
 
     def get_pending_points(self) -> List[GridPoint]:
-        """Get all pending points."""
         return [p for p in self.points.values() if p.status == "pending"]
 
     def get_failed_points(self) -> List[GridPoint]:
-        """Get all failed points."""
         return [p for p in self.points.values() if p.status == "failed"]
 
     def get_completed_points(self) -> List[GridPoint]:
-        """Get all completed points."""
         return [p for p in self.points.values() if p.status == "completed"]
 
     def summary(self) -> Dict[str, int]:
-        """Get status summary."""
         return {
-            "total": len(self.points),
-            "pending": len([p for p in self.points.values() if p.status == "pending"]),
-            "running": len([p for p in self.points.values() if p.status == "running"]),
-            "completed": len([p for p in self.points.values() if p.status == "completed"]),
-            "failed": len([p for p in self.points.values() if p.status == "failed"]),
-            "skipped": len([p for p in self.points.values() if p.status == "skipped"]),
+            "total":     len(self.points),
+            "pending":   sum(1 for p in self.points.values() if p.status == "pending"),
+            "running":   sum(1 for p in self.points.values() if p.status == "running"),
+            "completed": sum(1 for p in self.points.values() if p.status == "completed"),
+            "failed":    sum(1 for p in self.points.values() if p.status == "failed"),
+            "skipped":   sum(1 for p in self.points.values() if p.status == "skipped"),
         }
 
 
 class GridSearchConfig:
-    """Parser and validator for grid search configuration."""
+    """Parse and generate the Cartesian-product grid with constraints and sampling."""
 
     def __init__(self, config_dict: Dict[str, Any]) -> None:
         self.config = config_dict
@@ -138,87 +190,61 @@ class GridSearchConfig:
         self.selection = self.grid_cfg.get("selection", {})
 
     def generate_points(self) -> List[Dict[str, Any]]:
-        """Generate grid points from parameter space."""
         if not self.param_space:
             raise ValueError("No parameters defined in grid search configuration")
-
-        # Generate all combinations (Cartesian product)
         param_names = sorted(self.param_space.keys())
         param_values = [self.param_space[name] for name in param_names]
         all_combinations = list(product(*param_values))
-
-        # Convert to dictionaries
         points = [dict(zip(param_names, combo)) for combo in all_combinations]
-
-        # Apply constraints
         points = self._apply_constraints(points)
-
-        # Apply selection strategy
         points = self._apply_selection(points)
-
         return points
 
     def _apply_constraints(self, points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Filter points based on constraints."""
         filtered = []
         for point in points:
             skip = False
             for constraint in self.constraints:
-                # Simple if-then constraint checking
                 if "then_skip" in constraint:
+                    # Support both if_ and and_ prefixes as additional conditions
+                    cond_keys = [k for k in constraint if k.startswith("if_") or k.startswith("and_")]
                     conditions_met = all(
-                        point.get(key) == value
-                        for key, value in constraint.items()
-                        if key.startswith("if_")
+                        point.get(k.replace("if_", "").replace("and_", "")) == v
+                        for k, v in constraint.items()
+                        if k in cond_keys
                     )
                     if conditions_met:
                         skip = True
                         break
-
-                # If-then-not constraint
-                if "then_not_" in str(constraint):
-                    if_key = next((k for k in constraint.keys() if k.startswith("if_")), None)
-                    if if_key:
-                        if_param = if_key.replace("if_", "")
-                        then_not_key = next((k for k in constraint.keys() if k.startswith("then_not_")), None)
-                        if then_not_key:
-                            then_param = then_not_key.replace("then_not_", "")
-                            if point.get(if_param) == constraint[if_key]:
-                                point[then_param] = not constraint[then_not_key]
-
             if not skip:
                 filtered.append(point)
-
         return filtered
 
     def _apply_selection(self, points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Apply point selection strategy."""
         strategy = self.selection.get("strategy", "full").lower()
-
         if strategy == "full":
             return points
-        elif strategy == "random":
-            n_points = self.selection.get("n_points", min(50, len(points)))
-            seed = self.selection.get("random_seed", 42)
-            rng = np.random.RandomState(seed)
+        n_points = self.selection.get("n_points", min(50, len(points)))
+        seed = self.selection.get("random_seed", 42)
+        rng = np.random.RandomState(seed)
+        if strategy == "random":
             indices = rng.choice(len(points), size=min(n_points, len(points)), replace=False)
             return [points[i] for i in sorted(indices)]
-        elif strategy == "latin_hypercube":
-            # Simple LH sampling approximation
-            n_points = self.selection.get("n_points", min(50, len(points)))
-            seed = self.selection.get("random_seed", 42)
-            rng = np.random.RandomState(seed)
+        if strategy == "latin_hypercube":
             step = max(1, len(points) // n_points)
             shuffled = rng.permutation(len(points))
             indices = shuffled[::step][:n_points]
             return [points[i] for i in sorted(indices)]
-        else:
-            return points
+        return points
 
+
+# ---------------------------------------------------------------------------
+# Runner
+# ---------------------------------------------------------------------------
 
 @dataclass
 class GridSearchRunner:
-    """Main grid search orchestrator with error handling and monitoring."""
+    """Main grid search orchestrator with error handling and resumability."""
 
     config_path: str
     results_dir: str = "grid_search_results"
@@ -229,127 +255,111 @@ class GridSearchRunner:
     recovery_strategy: Optional[RecoveryStrategy] = None
 
     def __post_init__(self) -> None:
-        """Initialize runner."""
         self.results_root = Path(self.results_dir)
         self.results_root.mkdir(parents=True, exist_ok=True)
-
-        # Load configuration
         with open(self.config_path, "r", encoding="utf-8") as f:
             self.config = yaml.safe_load(f)
-
         self.grid_config = GridSearchConfig(self.config)
-
-        # Initialize logger
         log_file = self.results_root / "grid_search.log"
         if self.logger is None:
             self.logger = DualLogger(log_file, console_level="INFO", file_level="DEBUG")
-
-        # Initialize state management
         self.state = GridSearchState(self.results_root / "grid_search_state.json")
-
-        self.logger.info(f"Grid Search Runner initialized at {self.results_root}")
+        self.logger.info(f"Grid Search Runner initialised at {self.results_root}")
 
     def initialize_grid(self, force: bool = False) -> None:
-        """Generate or resume grid points."""
         if force or not self.state.points:
-            self.logger.info("Generating new grid points...")
+            self.logger.info("Generating new grid points …")
             points_data = self.grid_config.generate_points()
             self.state.points = {
-                i: GridPoint(point_id=i, params=params) for i, params in enumerate(points_data)
+                i: GridPoint(point_id=i, params=params)
+                for i, params in enumerate(points_data)
             }
             self.state.save()
             self.logger.info(f"Generated {len(self.state.points)} grid points")
         else:
             self.logger.info(f"Resuming with {len(self.state.points)} existing points")
-
-        summary = self.state.summary()
+        s = self.state.summary()
         self.logger.info(
-            f"Grid Summary: Total={summary['total']}, "
-            f"Pending={summary['pending']}, Completed={summary['completed']}, "
-            f"Failed={summary['failed']}, Skipped={summary['skipped']}"
+            f"Grid summary – total={s['total']} pending={s['pending']} "
+            f"completed={s['completed']} failed={s['failed']} skipped={s['skipped']}"
         )
 
+    # ------------------------------------------------------------------
+    # Config merging
+    # ------------------------------------------------------------------
+
     def get_point_config(self, base_config: Dict[str, Any], point: GridPoint) -> Dict[str, Any]:
-        """Merge grid point parameters into base configuration."""
+        """Merge the 6 grid parameters into a full training config."""
         cfg = json.loads(json.dumps(base_config))
 
-        # Map grid parameters to config paths
-        param_mapping = {
-            "model_architecture": ("model", "architecture"),
-            "pixel_loss_type": ("loss", "pixel", "type"),
+        # Direct parameter → config-path mapping  (only the 6 search dimensions)
+        param_mapping: Dict[str, Tuple[str, ...]] = {
+            "model_architecture":   ("model", "architecture"),
+            "encoder_filters":      ("model", "encoder_filters"),
+            "pixel_loss_type":      ("loss", "pixel", "type"),
             "boundary_loss_weight": ("loss", "boundary", "weight"),
-            "shape_loss_weight": ("loss", "shape", "weight"),
-            "learning_rate": ("training", "learning_rate"),
-            "encoder_filters": ("model", "encoder_filters"),
-            "dropout_rate": ("model", "dropout_rate"),
-            "deep_supervision": ("model", "deep_supervision"),
-            "batch_size": ("data", "batch_size"),
-            "loss_strategy": ("loss", "strategy"),
+            "shape_loss_weight":    ("loss", "shape", "weight"),
+            "learning_rate":        ("training", "learning_rate"),
         }
-
         for param_name, param_value in point.params.items():
             if param_name in param_mapping:
-                path = param_mapping[param_name]
-                self._set_nested_config(cfg, path, param_value)
+                self._set_nested_config(cfg, param_mapping[param_name], param_value)
 
-        # Derived flags: disable boundary loss when weight is 0
-        boundary_weight = point.params.get("boundary_loss_weight", cfg.get("loss", {}).get("boundary", {}).get("weight", 0.0))
-        self._set_nested_config(cfg, ("loss", "boundary", "enabled"), float(boundary_weight) > 0.0)
+        # Derived: enable/disable boundary and shape terms based on weight
+        b_weight = float(point.params.get(
+            "boundary_loss_weight",
+            cfg.get("loss", {}).get("boundary", {}).get("weight", 0.0),
+        ))
+        s_weight = float(point.params.get(
+            "shape_loss_weight",
+            cfg.get("loss", {}).get("shape", {}).get("weight", 0.0),
+        ))
+        self._set_nested_config(cfg, ("loss", "boundary", "enabled"), b_weight > 0.0)
+        self._set_nested_config(cfg, ("loss", "shape",    "enabled"), s_weight > 0.0)
 
-        # Derived flags: disable shape loss when weight is 0
-        shape_weight = point.params.get("shape_loss_weight", cfg.get("loss", {}).get("shape", {}).get("weight", 0.0))
-        self._set_nested_config(cfg, ("loss", "shape", "enabled"), float(shape_weight) > 0.0)
-
-        # Derived flags: enable MGDA when strategy is mgda
-        loss_strategy = point.params.get("loss_strategy", cfg.get("loss", {}).get("strategy", "single"))
-        self._set_nested_config(cfg, ("mgda", "enabled"), str(loss_strategy).lower() == "mgda")
-
-        # Derived flags: sync deep supervision loss with model setting
-        deep_supervision = point.params.get("deep_supervision", cfg.get("model", {}).get("deep_supervision", False))
-        self._set_nested_config(cfg, ("loss", "deep_supervision", "enabled"), bool(deep_supervision))
+        # MGDA always disabled; loss strategy always "weighted"
+        self._set_nested_config(cfg, ("mgda", "enabled"),      False)
+        self._set_nested_config(cfg, ("loss", "strategy"),     "weighted")
 
         return cfg
 
     @staticmethod
     def _set_nested_config(cfg: Dict[str, Any], path: Tuple[str, ...], value: Any) -> None:
-        """Set nested config value."""
-        current = cfg
+        cur = cfg
         for key in path[:-1]:
-            if key not in current:
-                current[key] = {}
-            current = current[key]
-        current[path[-1]] = value
+            cur = cur.setdefault(key, {})
+        cur[path[-1]] = value
+
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
 
     def run_point(self, point: GridPoint) -> bool:
-        """Execute a single grid point with error handling."""
+        """Train and evaluate a single grid point; save metrics and predictions."""
         point.status = "running"
         point.started_at = datetime.utcnow().isoformat()
         self.state.add_point(point)
 
         try:
             self.logger.info(f"\n{'=' * 80}")
-            self.logger.info(f"Running Grid Point {point.point_id}")
-            self.logger.info(f"Parameters: {json.dumps(point.params, indent=2)}")
+            self.logger.info(f"Grid Point {point.point_id:4d}  |  params: {json.dumps(point.params)}")
             self.logger.info(f"{'=' * 80}")
 
-            # Create result directory
             result_dir = self.results_root / f"point_{point.point_id:06d}"
             result_dir.mkdir(parents=True, exist_ok=True)
             point.result_dir = str(result_dir)
 
-            # Get merged config
             merged_config = self.get_point_config(self.config, point)
 
-            # Save config for this point
-            config_file = result_dir / "config.yaml"
-            with open(config_file, "w", encoding="utf-8") as f:
-                yaml.dump(merged_config, f, default_flow_style=False)
+            # Persist resolved config for reproducibility
+            with open(result_dir / "config.yaml", "w", encoding="utf-8") as fh:
+                yaml.dump(merged_config, fh, default_flow_style=False)
 
-            # Build datasets
-            data_cfg = dict(merged_config.get("data", {}))
-            augmentation_cfg = dict(merged_config.get("augmentation", {}))
-            project_cfg = dict(merged_config.get("project", {}))
-            augmentation_cfg["seed"] = int(project_cfg.get("seed", 42))
+            # ------ Data ------------------------------------------------
+            data_cfg   = dict(merged_config.get("data", {}))
+            aug_cfg    = dict(merged_config.get("augmentation", {}))
+            proj_cfg   = dict(merged_config.get("project", {}))
+            aug_cfg["seed"] = int(proj_cfg.get("seed", 42))
 
             loader = BuildingSegmentationDataset(
                 DatasetConfig(
@@ -359,7 +369,7 @@ class GridSearchRunner:
                     batch_size=int(data_cfg.get("batch_size", 4)),
                     num_workers=int(data_cfg.get("num_workers", 4)),
                     prefetch_buffer=int(data_cfg.get("prefetch_buffer", 2)),
-                    seed=int(project_cfg.get("seed", 42)),
+                    seed=int(proj_cfg.get("seed", 42)),
                 ),
                 skipped_log_path=str(result_dir / "skipped_files.txt"),
             )
@@ -370,65 +380,120 @@ class GridSearchRunner:
                 val_ratio=float(data_cfg.get("val_ratio", 0.15)),
                 test_ratio=float(data_cfg.get("test_ratio", 0.15)),
                 bins=int(data_cfg.get("building_density_bins", 3)),
-                seed=int(project_cfg.get("seed", 42)),
+                seed=int(proj_cfg.get("seed", 42)),
             )
             split = splitter.split(loader.get_density_labels())
-
-            train_ds = loader.get_tf_dataset(split["train"], augment=bool(augmentation_cfg.get("enabled", True)), augmentation_config=augmentation_cfg, shuffle=True)
-            val_ds = loader.get_tf_dataset(split["val"], augment=False, shuffle=False)
-            test_ds = loader.get_tf_dataset(split["test"], augment=False, shuffle=False)
+            train_ds = loader.get_tf_dataset(split["train"], augment=bool(aug_cfg.get("enabled", True)),  augmentation_config=aug_cfg, shuffle=True)
+            val_ds   = loader.get_tf_dataset(split["val"],   augment=False, shuffle=False)
+            test_ds  = loader.get_tf_dataset(split["test"],  augment=False, shuffle=False)
 
             self.logger.info(
-                f"Point {point.point_id} | Dataset: total={len(loader.pairs)} "
+                f"Point {point.point_id} | pairs={len(loader.pairs)} "
                 f"train={len(split['train'])} val={len(split['val'])} test={len(split['test'])}"
             )
 
-            # Build model
+            # ------ Train -----------------------------------------------
             model = get_model(merged_config)
-
-            # Train
-            checkpoint_manager = CheckpointManager(result_dir / "checkpoints")
-            trainer = Trainer(model, merged_config, result_dir, checkpoint_manager)
-            training_result = trainer.fit(train_ds, val_ds)
+            ckpt_mgr = CheckpointManager(result_dir / "checkpoints")
+            trainer  = Trainer(model, merged_config, result_dir, ckpt_mgr)
+            result   = trainer.fit(train_ds, val_ds)
 
             self.logger.info(
-                f"Point {point.point_id} | Training done: best_epoch={training_result.best_epoch} "
-                f"best_metric={float(training_result.best_metric):.4f} "
-                f"stopped_early={training_result.stopped_early}"
+                f"Point {point.point_id} | best_epoch={result.best_epoch} "
+                f"best_val_iou={float(result.best_metric):.4f} "
+                f"early_stop={result.stopped_early}"
             )
 
-            # Evaluate on test set
-            evaluator = Evaluator()
+            # ------ Evaluate --------------------------------------------
+            evaluator    = Evaluator()
             test_metrics = evaluator.evaluate(model, test_ds)
+            history      = result.history
 
-            # Collect metrics
-            history = training_result.history
             point.metrics = {
-                "train_loss": float(history.get("train_loss", [0.0])[-1]),
-                "val_iou": float(training_result.best_metric),
-                "test_iou": float(test_metrics.get("iou", 0.0)),
-                "test_dice": float(test_metrics.get("dice", 0.0)),
-                "test_precision": float(test_metrics.get("precision", 0.0)),
-                "test_recall": float(test_metrics.get("recall", 0.0)),
-                "test_boundary_f1": float(test_metrics.get("boundary_f1", 0.0)),
-                "test_compactness": float(test_metrics.get("compactness", 0.0)),
-                "best_epoch": int(training_result.best_epoch),
-                "total_epochs": int(len(history.get("train_loss", []))),
-                "stopped_early": bool(training_result.stopped_early),
+                "train_loss":       float(history.get("train_loss", [0.0])[-1]),
+                "val_iou":          float(result.best_metric),
+                "test_iou":         float(test_metrics.get("iou",          0.0)),
+                "test_dice":        float(test_metrics.get("dice",         0.0)),
+                "test_precision":   float(test_metrics.get("precision",    0.0)),
+                "test_recall":      float(test_metrics.get("recall",       0.0)),
+                "test_pixel_acc":   float(test_metrics.get("pixel_accuracy", 0.0)),
+                "test_boundary_iou":float(test_metrics.get("boundary_iou", 0.0)),
+                "test_boundary_f1": float(test_metrics.get("boundary_f1",  0.0)),
+                "test_compactness": float(test_metrics.get("compactness",  0.0)),
+                "best_epoch":       int(result.best_epoch),
+                "total_epochs":     int(len(history.get("train_loss", []))),
+                "stopped_early":    bool(result.stopped_early),
             }
 
-            self.logger.info(f"Completed Point {point.point_id} | Metrics: {point.metrics}")
+            self.logger.info(
+                f"Point {point.point_id} | test_iou={point.metrics['test_iou']:.4f} "
+                f"boundary_f1={point.metrics['test_boundary_f1']:.4f} "
+                f"compactness={point.metrics['test_compactness']:.4f}"
+            )
+
+            # ------ Save prediction images ------------------------------
+            export_cfg = dict(merged_config.get("export", {}))
+            if export_cfg.get("save_predictions", True):
+                n_samples   = int(export_cfg.get("n_prediction_samples", 8))
+                arch        = point.params.get("model_architecture", "?")
+                depth       = "deep" if len(point.params.get("encoder_filters", [])) > 4 and \
+                               point.params.get("encoder_filters", [0])[-1] >= 1024 else "shallow"
+                loss_lbl    = point.params.get("pixel_loss_type", "?")
+                b_w         = point.params.get("boundary_loss_weight", 0.0)
+                s_w         = point.params.get("shape_loss_weight",    0.0)
+                lr_lbl      = point.params.get("learning_rate", 0.0)
+                point_label = (
+                    f"Point {point.point_id}: {arch} | {depth} | loss={loss_lbl} "
+                    f"| b={b_w} s={s_w} | lr={lr_lbl}"
+                )
+                _save_prediction_samples(
+                    model, test_ds, n_samples,
+                    result_dir / "predictions",
+                    point_label=point_label,
+                )
+                self.logger.info(f"Point {point.point_id} | Saved {n_samples} prediction images")
+
             point.status = "completed"
             point.completed_at = datetime.utcnow().isoformat()
             self.state.add_point(point)
+
+            # Release GPU memory between points to reduce fragmentation
+            try:
+                import tensorflow as tf
+                tf.keras.backend.clear_session()
+            except Exception:
+                pass
+            gc.collect()
             return True
 
         except Exception as exc:
-            self.logger.error(f"FAILED Point {point.point_id}: {exc}")
-            self.logger.exception(f"Traceback for Point {point.point_id}")
+            exc_type = type(exc).__name__
+            exc_str = str(exc)
+            is_oom = (
+                "ResourceExhausted" in exc_type
+                or "OOM" in exc_str
+                or "out of memory" in exc_str.lower()
+                or "allocat" in exc_str.lower() and "memory" in exc_str.lower()
+            )
+            if is_oom:
+                self.logger.warning(
+                    f"Point {point.point_id}: GPU out of memory — "
+                    f"skipping point and freeing GPU memory."
+                )
+                # Free GPU memory so subsequent points can run
+                try:
+                    import tensorflow as tf
+                    tf.keras.backend.clear_session()
+                except Exception:
+                    pass
+                gc.collect()
+                point.error_message = f"[OOM] {exc_str}"
+            else:
+                self.logger.error(f"FAILED Point {point.point_id}: {exc}")
+                self.logger.exception(f"Traceback for Point {point.point_id}")
+                point.error_message = exc_str
             point.status = "failed"
             point.completed_at = datetime.utcnow().isoformat()
-            point.error_message = str(exc)
             point.error_traceback = traceback.format_exc()
             self.state.add_point(point)
             return False
@@ -436,61 +501,50 @@ class GridSearchRunner:
     def run_search(self, start_from_pending: bool = True) -> None:
         """Execute the full grid search with resumability."""
         self.initialize_grid()
-
-        start_time = time.time()
-        points_to_run = self.state.get_pending_points() if start_from_pending else list(self.state.points.values())
-
-        self.logger.info(f"Starting grid search with {len(points_to_run)} points to evaluate")
-
+        t0 = time.time()
+        points_to_run = (
+            self.state.get_pending_points() if start_from_pending
+            else list(self.state.points.values())
+        )
+        self.logger.info(f"Starting grid search with {len(points_to_run)} points")
         for point in points_to_run:
             self.run_point(point)
-
-            # Log intermediate summary
-            summary = self.state.summary()
+            s = self.state.summary()
             self.logger.info(
-                f"Progress: {summary['completed']}/{summary['total']} completed, "
-                f"{summary['failed']} failed, {summary['pending']} pending"
+                f"Progress: {s['completed']}/{s['total']} completed | "
+                f"failed={s['failed']} pending={s['pending']}"
             )
-
-        elapsed = time.time() - start_time
-        summary = self.state.summary()
-
-        self.logger.info(f"\n{'=' * 80}")
-        self.logger.info("GRID SEARCH SUMMARY")
-        self.logger.info(f"{'=' * 80}")
-        self.logger.info(f"Total Time: {elapsed:.2f} seconds")
-        self.logger.info(f"Total Points: {summary['total']}")
-        self.logger.info(f"Completed: {summary['completed']}")
-        self.logger.info(f"Failed: {summary['failed']}")
-        self.logger.info(f"Pending: {summary['pending']}")
+        elapsed = time.time() - t0
+        s = self.state.summary()
+        self.logger.info(
+            f"\nGrid search finished in {elapsed:.1f}s | "
+            f"completed={s['completed']} failed={s['failed']} skipped={s['skipped']}"
+        )
 
     def generate_results_report(self) -> Path:
-        """Generate aggregated results report."""
+        """Persist aggregated JSON report."""
         report_file = self.results_root / "grid_search_results.json"
-
         completed = self.state.get_completed_points()
-        results = {
-            "generated_at": datetime.utcnow().isoformat(),
-            "total_points": len(self.state.points),
-            "completed_points": len(completed),
-            "results": [p.to_dict() for p in completed],
-        }
-
         with open(report_file, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2, default=str)
-
-        self.logger.info(f"Results report saved to {report_file}")
+            json.dump(
+                {
+                    "generated_at":    datetime.utcnow().isoformat(),
+                    "total_points":    len(self.state.points),
+                    "completed_points": len(completed),
+                    "results":         [p.to_dict() for p in completed],
+                },
+                f, indent=2, default=str,
+            )
+        self.logger.info(f"Results report → {report_file}")
         return report_file
 
-    def get_best_point(self, metric: str = "val_iou") -> Optional[GridPoint]:
-        """Get best performing point by metric."""
+    def get_best_point(self, metric: str = "test_iou") -> Optional[GridPoint]:
         completed = self.state.get_completed_points()
         if not completed:
             return None
+        return max(completed, key=lambda p: p.metrics.get(metric, float("-inf")))
 
-        best = max(
-            completed,
-            key=lambda p: p.metrics.get(metric, float("-inf")),
-            default=None,
-        )
-        return best
+    def get_top_points(self, n: int = 10, metric: str = "test_iou") -> List[GridPoint]:
+        completed = self.state.get_completed_points()
+        return sorted(completed, key=lambda p: p.metrics.get(metric, float("-inf")), reverse=True)[:n]
+

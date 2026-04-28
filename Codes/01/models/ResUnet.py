@@ -10,7 +10,7 @@ from tensorflow.keras.models import Model
 
 np.random.seed(101)
 
-def ResUnet():
+def ResUnet(encoder_filters=None, summary=False):
     input_size=256
     def conv_block(x, n_filter):
         x_init = x
@@ -47,7 +47,7 @@ def ResUnet():
         else:
             return c
 
-    n_filters = [16, 32, 64, 96, 128]
+    n_filters = list(encoder_filters) if encoder_filters is not None else [16, 32, 64, 96, 128]
     inputs = Input((input_size, input_size, 3))
 
     c0 = inputs
@@ -89,5 +89,6 @@ def ResUnet():
 
         ## Model
     model = Model(inputs, outputs, name='ResUNet')
-    model.summary()
+    if summary:
+        model.summary()
     return model

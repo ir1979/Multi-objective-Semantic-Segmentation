@@ -14,7 +14,7 @@ def dataframe_to_latex(
     label: str,
     highlight_best: bool = True,
     highlight_col_direction: Dict[str, str] | None = None,
-    save_path: str = "tables/metrics.tex",
+    save_path: str | None = "tables/metrics.tex",
 ) -> str:
     """Convert a dataframe into a Booktabs-style LaTeX table."""
     working = df.copy()
@@ -32,9 +32,10 @@ def dataframe_to_latex(
             working.loc[best_index, column] = f"\\textbf{{{working.loc[best_index, column]}}}"
 
     latex = working.to_latex(index=False, escape=False, caption=caption, label=label, bold_rows=False)
-    path = Path(save_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(latex, encoding="utf-8")
+    if save_path is not None:
+        path = Path(save_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(latex, encoding="utf-8")
     return latex
 
 

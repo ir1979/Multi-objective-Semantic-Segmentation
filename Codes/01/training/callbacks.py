@@ -34,7 +34,7 @@ class ValidationImageLogger:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def log(self, epoch: int, model: tf.keras.Model) -> None:
-        if self.sample_batch is None or epoch % self.interval != 0:
+        if self.sample_batch is None or self.interval <= 0 or epoch % self.interval != 0:
             return
         images, _ = self.sample_batch
         preds = model(images, training=False)

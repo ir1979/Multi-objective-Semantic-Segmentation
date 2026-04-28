@@ -1,0 +1,5 @@
+inherits: ../default.yaml
+loss:
+  pixel:
+    type: bce
+*** End Patch
