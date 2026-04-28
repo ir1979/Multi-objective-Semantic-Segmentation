@@ -1,0 +1,1619 @@
+Part 6 of 16
+
+---- FILE: Codes/01/tests/test_data_loading.py
+
+"""Tests for data loading, pairing, and splitting."""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+import tensorflow as tf
+from PIL import Image
+
+from data.loader import BuildingSegmentationDataset, DatasetConfig
+from data.splitter import StratifiedSplitter
+
+
+def _write_rgb(path: Path, value: int = 128) -> None:
+    array = np.full((256, 256, 3), value, dtype=np.uint8)
+    Image.fromarray(array).save(path)
+
+
+def _write_mask(path: Path, fill: int = 0) -> None:
+    array = np.full((256, 256), fill, dtype=np.uint8)
+    Image.fromarray(array).save(path)
+
+
+class TestDataLoading(unittest.TestCase):
+    """Dataset loader and split tests."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.rgb_dir = self.root / "RGB"
+        self.mask_dir = self.root / "Mask"
+        self.rgb_dir.mkdir(parents=True, exist_ok=True)
+        self.mask_dir.mkdir(parents=True, exist_ok=True)
+        for idx in range(12):
+            stem = f"tile_{idx:03d}"
+            _write_rgb(self.rgb_dir / f"{stem}.png", value=idx * 10)
+            mask_fill = 255 if idx % 3 == 0 else 0
+            _write_mask(self.mask_dir / f"{stem}.tif", fill=mask_fill)
+
+        self.config = DatasetConfig(
+            rgb_dir=str(self.rgb_dir),
+            mask_dir=str(self.mask_dir),
+            image_size=256,
+            batch_size=4,
+            seed=42,
+        )
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_scan_finds_all_files(self) -> None:
+        loader = BuildingSegmentationDataset(self.config, skipped_log_path=str(self.root / "skipped.txt"))
+        pairs = loader.scan_and_pair()
+        self.assertEqual(len(pairs), 12)
+
+    def test_pairing_matches_correctly(self) -> None:
+        loader = BuildingSegmentationDataset(self.config, skipped_log_path=str(self.root / "skipped.txt"))
+        pairs, orphaned = loader.validate_pairs()
+        self.assertFalse(orphaned)
+        for rgb_path, mask_path in pairs:
+            self.assertEqual(rgb_path.stem, mask_path.stem)
+
+    def test_orphan_detection(self) -> None:
+        _write_rgb(self.rgb_dir / "orphan.png", value=10)
+        loader = BuildingSegmentationDataset(self.config, skipped_log_path=str(self.root / "skipped.txt"))
+        pairs = loader.scan_and_pair()
+        self.assertEqual(len(pairs), 12)
+        _, orphaned = loader.validate_pairs()
+        self.assertFalse(any(path.stem == "orphan" for path in orphaned))
+
+    def test_mask_binarization(self) -> None:
+        loader = BuildingSegmentationDataset(self.config, skipped_log_path=str(self.root / "skipped.txt"))
+        loader.validate_pairs()
+        image, mask = loader.load_sample(loader.pairs[0][0], loader.pairs[0][1])
+        self.assertEqual(image.shape, (256, 256, 3))
+        self.assertEqual(mask.shape, (256, 256, 1))
+        self.assertTrue(set(np.unique(mask).tolist()).issubset({0.0, 1.0}))
+
+    def test_output_dtypes_and_ranges(self) -> None:
+        loader = BuildingSegmentationDataset(self.config, skipped_log_path=str(self.root / "skipped.txt"))
+        loader.validate_pairs()
+        image, mask = loader.load_sample(loader.pairs[1][0], loader.pairs[1][1])
+        self.assertEqual(image.dtype, np.float32)
+        self.assertEqual(mask.dtype, np.float32)
+        self.assertGreaterEqual(float(image.min()), 0.0)
+        self.assertLessEqual(float(image.max()), 1.0)
+        self.assertGreaterEqual(float(mask.min()), 0.0)
+        self.assertLessEqual(float(mask.max()), 1.0)
+
+    def test_tf_dataset_augmentation_pipeline_runs(self) -> None:
+        loader = BuildingSegmentationDataset(self.config, skipped_log_path=str(self.root / "skipped.txt"))
+        loader.validate_pairs()
+        dataset = loader.get_tf_dataset(
+            indices=[0, 1, 2],
+            augment=True,
+            augmentation_config={
+                "horizontal_flip": True,
+                "vertical_flip": True,
+                "random_rotation": True,
+                "brightness_range": 0.1,
+                "contrast_range": 0.1,
+                "seed": 123,
+            },
+            shuffle=False,
+        )
+        batch = next(iter(dataset.take(1)))
+        images, masks = batch
+        self.assertEqual(images.shape[0], 3)
+        self.assertEqual(images.shape[-1], 3)
+        self.assertEqual(masks.shape[0], 3)
+        self.assertEqual(masks.shape[-1], 1)
+        self.assertEqual(images.dtype, np.float32)
+        self.assertEqual(masks.dtype, np.float32)
+
+    def test_tf_dataset_augmentation_pipeline_is_repeatable(self) -> None:
+        loader = BuildingSegmentationDataset(self.config, skipped_log_path=str(self.root / "skipped.txt"))
+        loader.validate_pairs()
+        augmentation_config = {
+            "horizontal_flip": True,
+            "vertical_flip": True,
+            "random_rotation": True,
+            "brightness_range": 0.1,
+            "contrast_range": 0.1,
+            "seed": 123,
+        }
+        dataset_a = loader.get_tf_dataset(indices=[0], augment=True, augmentation_config=augmentation_config, shuffle=False)
+        dataset_b = loader.get_tf_dataset(indices=[0], augment=True, augmentation_config=augmentation_config, shuffle=False)
+        images_a, masks_a = next(iter(dataset_a.take(1)))
+        images_b, masks_b = next(iter(dataset_b.take(1)))
+        self.assertTrue(np.allclose(images_a.numpy(), images_b.numpy()))
+        self.assertTrue(np.allclose(masks_a.numpy(), masks_b.numpy()))
+
+    def test_stratified_split_ratios(self) -> None:
+        loader = BuildingSegmentationDataset(self.config, skipped_log_path=str(self.root / "skipped.txt"))
+        loader.validate_pairs()
+        densities = loader.get_density_labels()
+        splitter = StratifiedSplitter(0.7, 0.15, 0.15, bins=3, seed=42)
+        split = splitter.split(densities)
+        total = len(densities)
+        self.assertEqual(len(split["train"]) + len(split["val"]) + len(split["test"]), total)
+
+    def test_split_determinism(self) -> None:
+        densities = np.linspace(0.0, 1.0, 50)
+        splitter_a = StratifiedSplitter(0.7, 0.15, 0.15, bins=3, seed=123)
+        splitter_b = StratifiedSplitter(0.7, 0.15, 0.15, bins=3, seed=123)
+        self.assertEqual(splitter_a.split(densities), splitter_b.split(densities))
+
+
+==== END FILE ====
+---- FILE: Codes/01/tests/test_losses.py
+
+"""Loss function tests."""
+
+from __future__ import annotations
+
+import unittest
+
+import numpy as np
+import tensorflow as tf
+
+from losses.boundary_losses import ApproxHausdorffLoss
+from losses.loss_manager import LossManager
+from losses.pixel_losses import BCELoss, BCEIoULoss, DiceLoss, FocalLoss, IoULoss
+from losses.shape_losses import ConvexityLoss, RegularityLoss
+
+
+class TestLosses(unittest.TestCase):
+    """Validate loss values and differentiability."""
+
+    def setUp(self) -> None:
+        self.y_true = tf.constant(np.ones((1, 64, 64, 1), dtype=np.float32))
+        self.y_pred_good = tf.constant(np.ones((1, 64, 64, 1), dtype=np.float32))
+        self.y_pred_bad = tf.constant(np.zeros((1, 64, 64, 1), dtype=np.float32))
+
+    def test_bce_perfect_prediction(self) -> None:
+        loss = BCELoss()(self.y_true, self.y_pred_good)
+        self.assertLess(float(loss.numpy()), 1e-3)
+
+    def test_iou_loss_perfect(self) -> None:
+        loss = IoULoss()(self.y_true, self.y_pred_good)
+        self.assertLess(float(loss.numpy()), 1e-3)
+
+    def test_iou_loss_no_overlap(self) -> None:
+        loss = IoULoss()(self.y_true, self.y_pred_bad)
+        self.assertGreater(float(loss.numpy()), 0.9)
+
+    def test_dice_loss_symmetry(self) -> None:
+        dice = DiceLoss()
+        a = tf.cast(tf.random.uniform((1, 64, 64, 1)) > 0.5, tf.float32)
+        b = tf.cast(tf.random.uniform((1, 64, 64, 1)) > 0.5, tf.float32)
+        self.assertAlmostEqual(float(dice(a, b).numpy()), float(dice(b, a).numpy()), places=5)
+
+    def test_boundary_loss_perfect(self) -> None:
+        loss = ApproxHausdorffLoss()(self.y_true, self.y_true)
+        self.assertGreaterEqual(float(loss.numpy()), 0.0)
+
+    def test_shape_losses(self) -> None:
+        convex = ConvexityLoss()(self.y_true, self.y_true)
+        reg = RegularityLoss()(self.y_true, self.y_true)
+        self.assertTrue(np.isfinite(float(convex.numpy())))
+        self.assertTrue(np.isfinite(float(reg.numpy())))
+
+    def test_focal_loss_reduces_easy_examples(self) -> None:
+        focal = FocalLoss()
+        easy = focal(self.y_true, self.y_pred_good)
+        hard = focal(self.y_true, self.y_pred_bad + 1e-3)
+        self.assertLess(float(easy.numpy()), float(hard.numpy()))
+
+    def test_all_losses_differentiable(self) -> None:
+        losses = [BCELoss(), IoULoss(), DiceLoss(), BCEIoULoss(), FocalLoss(), ApproxHausdorffLoss(), ConvexityLoss(), RegularityLoss()]
+        pred = tf.Variable(tf.random.uniform((1, 64, 64, 1), minval=0.1, maxval=0.9))
+        for loss_fn in losses:
+            with tf.GradientTape() as tape:
+                value = loss_fn(self.y_true, pred)
+            grad = tape.gradient(value, pred)
+            self.assertIsNotNone(grad)
+
+    def test_loss_manager_weighted(self) -> None:
+        manager = LossManager(
+            {
+                "loss": {
+                    "strategy": "weighted",
+                    "pixel": {"type": "bce_iou", "weight": 1.0},
+                    "boundary": {"enabled": True, "weight": 0.5},
+                    "shape": {"enabled": True, "weight": 0.25},
+                }
+            }
+        )
+        losses_dict = manager.compute_losses(self.y_true, self.y_pred_good)
+        total = manager.compute_weighted_total(losses_dict)
+        self.assertTrue(np.isfinite(float(total.numpy())))
+
+    def test_loss_manager_returns_all(self) -> None:
+        manager = LossManager(
+            {
+                "loss": {
+                    "strategy": "mgda",
+                    "pixel": {"type": "bce", "weight": 1.0},
+                    "boundary": {"enabled": True, "weight": 0.2},
+                    "shape": {"enabled": True, "weight": 0.1},
+                }
+            }
+        )
+        losses_dict = manager.compute_losses(self.y_true, self.y_pred_good)
+        self.assertEqual(set(losses_dict.keys()), {"pixel", "boundary", "shape"})
+
+
+
+==== END FILE ====
+---- FILE: Codes/01/tests/test_mgda.py
+
+"""MGDA solver tests."""
+
+from __future__ import annotations
+
+import unittest
+
+import numpy as np
+import tensorflow as tf
+
+from optimization.mgda import MGDASolver
+
+
+class TestMGDA(unittest.TestCase):
+    """Validate MGDA simplex and convergence properties."""
+
+    def setUp(self) -> None:
+        self.solver = MGDASolver(max_iterations=100, tolerance=1e-8)
+
+    def test_alphas_sum_to_one(self) -> None:
+        gradients = [[tf.constant([1.0, 0.0])], [tf.constant([0.0, 1.0])]]
+        alphas, _ = self.solver.solve(gradients)
+        self.assertAlmostEqual(float(np.sum(alphas)), 1.0, places=6)
+
+    def test_alphas_non_negative(self) -> None:
+        gradients = [[tf.constant([1.0, 0.0])], [tf.constant([0.0, 1.0])]]
+        alphas, _ = self.solver.solve(gradients)
+        self.assertTrue(np.all(alphas >= -1e-8))
+
+    def test_identical_gradients_uniform(self) -> None:
+        gradients = [[tf.constant([1.0, 2.0])], [tf.constant([1.0, 2.0])]]
+        alphas, _ = self.solver.solve(gradients)
+        self.assertAlmostEqual(float(alphas[0]), float(alphas[1]), places=2)
+
+    def test_single_objective(self) -> None:
+        gradients = [[tf.constant([1.0, 2.0])]]
+        alphas, combined = self.solver.solve(gradients)
+        self.assertEqual(alphas.tolist(), [1.0])
+        self.assertEqual(len(combined), 1)
+
+    def test_zero_gradient_handling(self) -> None:
+        gradients = [[tf.constant([0.0, 0.0])], [tf.constant([1.0, 0.0])]]
+        alphas, _ = self.solver.solve(gradients)
+        self.assertAlmostEqual(float(np.sum(alphas)), 1.0, places=6)
+
+    def test_gradient_combination_shape(self) -> None:
+        gradients = [
+            [tf.constant([[1.0, 0.0], [0.0, 1.0]], dtype=tf.float32)],
+            [tf.constant([[0.5, 0.5], [0.5, 0.5]], dtype=tf.float32)],
+            [tf.constant([[0.0, 1.0], [1.0, 0.0]], dtype=tf.float32)],
+        ]
+        _, combined = self.solver.solve(gradients)
+        self.assertEqual(tuple(combined[0].shape), (2, 2))
+
+
+
+==== END FILE ====
+---- FILE: Codes/01/tests/test_models.py
+
+"""Model architecture tests."""
+
+from __future__ import annotations
+
+import unittest
+
+import tensorflow as tf
+
+from models.factory import get_model
+from models.unet import UNet
+from models.unetpp import UNetPlusPlus
+
+
+class TestModels(unittest.TestCase):
+    """Validate model factory and output behavior."""
+
+    def test_unet_output_shape(self) -> None:
+        model = UNet()
+        x = tf.random.uniform((1, 256, 256, 3))
+        y = model(x, training=False)
+        self.assertEqual(tuple(y.shape), (1, 256, 256, 1))
+
+    def test_unetpp_output_shape(self) -> None:
+        model = UNetPlusPlus(deep_supervision=False)
+        x = tf.random.uniform((1, 256, 256, 3))
+        y = model(x, training=False)
+        self.assertEqual(tuple(y.shape), (1, 256, 256, 1))
+
+    def test_unetpp_deep_supervision_shapes(self) -> None:
+        model = UNetPlusPlus(deep_supervision=True)
+        x = tf.random.uniform((1, 256, 256, 3))
+        outputs = model(x, training=False)
+        self.assertIsInstance(outputs, list)
+        self.assertEqual(len(outputs), 4)
+        for out in outputs:
+            self.assertEqual(tuple(out.shape), (1, 256, 256, 1))
+
+    def test_model_factory_unet(self) -> None:
+        model = get_model({"model": {"architecture": "unet"}})
+        self.assertIsInstance(model, UNet)
+
+    def test_model_factory_unetpp(self) -> None:
+        model = get_model({"model": {"architecture": "unetpp"}})
+        self.assertIsInstance(model, UNetPlusPlus)
+
+    def test_model_factory_invalid(self) -> None:
+        with self.assertRaises(ValueError):
+            _ = get_model({"model": {"architecture": "invalid"}})
+
+    def test_output_range(self) -> None:
+        model = UNet()
+        y = model(tf.random.uniform((1, 256, 256, 3)), training=False)
+        self.assertGreaterEqual(float(tf.reduce_min(y).numpy()), 0.0)
+        self.assertLessEqual(float(tf.reduce_max(y).numpy()), 1.0)
+
+    def test_gradient_flow(self) -> None:
+        model = UNet()
+        x = tf.random.uniform((1, 256, 256, 3))
+        y_true = tf.random.uniform((1, 256, 256, 1))
+        with tf.GradientTape() as tape:
+            y_pred = model(x, training=True)
+            loss = tf.reduce_mean(tf.square(y_pred - y_true))
+        grads = tape.gradient(loss, model.trainable_variables)
+        non_zero = [g for g in grads if g is not None and float(tf.reduce_sum(tf.abs(g)).numpy()) > 0.0]
+        self.assertTrue(len(non_zero) > 0)
+
+
+==== END FILE ====
+---- FILE: Codes/01/tests/test_reproducibility.py
+
+"""Reproducibility tests for seed-controlled behavior."""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+import tensorflow as tf
+from PIL import Image
+
+from data.loader import BuildingSegmentationDataset, DatasetConfig
+from data.splitter import StratifiedSplitter
+from models.unet import UNet
+from utils.reproducibility import compute_dataset_hash, set_global_seed
+
+
+def _write_rgb(path: Path, seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    image = (rng.random((256, 256, 3)) * 255).astype(np.uint8)
+    Image.fromarray(image).save(path)
+
+
+def _write_mask(path: Path, seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    mask = (rng.random((256, 256)) > 0.85).astype(np.uint8) * 255
+    Image.fromarray(mask).save(path)
+
+
+class TestReproducibility(unittest.TestCase):
+    """Ensure deterministic behavior under fixed seeds."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.rgb_dir = self.root / "RGB"
+        self.mask_dir = self.root / "Mask"
+        self.rgb_dir.mkdir(parents=True, exist_ok=True)
+        self.mask_dir.mkdir(parents=True, exist_ok=True)
+        for idx in range(12):
+            _write_rgb(self.rgb_dir / f"tile_{idx:03d}.png", idx)
+            _write_mask(self.mask_dir / f"tile_{idx:03d}.tif", idx)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _load_densities(self):
+        loader = BuildingSegmentationDataset(
+            DatasetConfig(
+                rgb_dir=str(self.rgb_dir),
+                mask_dir=str(self.mask_dir),
+                image_size=256,
+                batch_size=2,
+                seed=42,
+            ),
+            skipped_log_path=str(self.root / "skipped.txt"),
+        )
+        loader.validate_pairs()
+        return loader.get_density_labels()
+
+    def test_same_seed_same_split(self) -> None:
+        densities = self._load_densities()
+        split_a = StratifiedSplitter(0.7, 0.15, 0.15, bins=3, seed=42).split(densities)
+        split_b = StratifiedSplitter(0.7, 0.15, 0.15, bins=3, seed=42).split(densities)
+        self.assertEqual(split_a, split_b)
+
+    def test_same_seed_same_init(self) -> None:
+        set_global_seed(123)
+        model_a = UNet()
+        weights_a = model_a(tf.random.uniform((1, 256, 256, 3)), training=False).numpy()
+        set_global_seed(123)
+        model_b = UNet()
+        weights_b = model_b(tf.random.uniform((1, 256, 256, 3)), training=False).numpy()
+        self.assertTrue(np.allclose(weights_a, weights_b))
+
+    def test_same_seed_same_augmentation(self) -> None:
+        set_global_seed(99)
+        image = tf.random.uniform((1, 256, 256, 3))
+        set_global_seed(99)
+        image_again = tf.random.uniform((1, 256, 256, 3))
+        self.assertTrue(np.allclose(image.numpy(), image_again.numpy()))
+
+    def test_dataset_hash_consistent(self) -> None:
+        hash_a = compute_dataset_hash(str(self.root))
+        hash_b = compute_dataset_hash(str(self.root))
+        self.assertEqual(hash_a, hash_b)
+
+    def test_different_seed_different_results(self) -> None:
+        densities = self._load_densities()
+        split_a = StratifiedSplitter(0.7, 0.15, 0.15, bins=3, seed=1).split(densities)
+        split_b = StratifiedSplitter(0.7, 0.15, 0.15, bins=3, seed=2).split(densities)
+        self.assertNotEqual(split_a, split_b)
+
+
+==== END FILE ====
+---- FILE: Codes/01/tests/test_run_all_cli.py
+
+"""CLI logging configuration tests for the pipeline entrypoint."""
+
+from __future__ import annotations
+
+import unittest
+
+from run_all import apply_logging_overrides, normalize_log_level, resolve_console_level
+
+
+class TestRunAllCLI(unittest.TestCase):
+    """Validate CLI verbosity mapping and logging overrides."""
+
+    def test_resolve_console_level_defaults_to_info(self) -> None:
+        self.assertEqual(resolve_console_level(verbose=1, quiet=False), "INFO")
+
+    def test_resolve_console_level_quiet_wins(self) -> None:
+        self.assertEqual(resolve_console_level(verbose=2, quiet=True), "ERROR")
+
+    def test_resolve_console_level_debug(self) -> None:
+        self.assertEqual(resolve_console_level(verbose=2, quiet=False), "DEBUG")
+
+    def test_apply_logging_overrides_preserves_debug_file_logs(self) -> None:
+        config = {"logging": {"file_level": "DEBUG", "validation_image_interval": 5}}
+        updated = apply_logging_overrides(config, "WARNING", "INFO")
+        self.assertEqual(updated["logging"]["console_level"], "WARNING")
+        self.assertEqual(updated["logging"]["file_level"], "INFO")
+        self.assertEqual(updated["logging"]["validation_image_interval"], 5)
+
+    def test_normalize_log_level_uppercases(self) -> None:
+        self.assertEqual(normalize_log_level("warning"), "WARNING")
+
+
+==== END FILE ====
+---- FILE: Codes/01/tests/test_training.py
+
+"""Training loop smoke tests."""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+import gc
+
+import numpy as np
+import json
+import tensorflow as tf
+from PIL import Image
+
+from data.loader import BuildingSegmentationDataset, DatasetConfig
+from data.splitter import StratifiedSplitter
+from models.factory import get_model
+from training.checkpoint_manager import CheckpointManager
+from training.evaluator import Evaluator
+from training.trainer import Trainer
+
+
+def _clone_config(cfg):
+    import copy
+    return copy.deepcopy(cfg)
+
+
+def _write_rgb(path: Path, seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    image = (rng.random((256, 256, 3)) * 255).astype(np.uint8)
+    Image.fromarray(image).save(path)
+
+
+def _write_mask(path: Path, seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    mask = (rng.random((256, 256)) > 0.8).astype(np.uint8) * 255
+    Image.fromarray(mask).save(path)
+
+
+class TestTraining(unittest.TestCase):
+    """Ensure short training runs execute correctly."""
+
+    def setUp(self) -> None:
+        tf.keras.backend.clear_session()
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.rgb_dir = root / "RGB"
+        self.mask_dir = root / "Mask"
+        self.image_size = 128
+        self.rgb_dir.mkdir(parents=True, exist_ok=True)
+        self.mask_dir.mkdir(parents=True, exist_ok=True)
+        for idx in range(18):
+            image = (np.random.default_rng(idx).random((self.image_size, self.image_size, 3)) * 255).astype(np.uint8)
+            mask = (np.random.default_rng(idx).random((self.image_size, self.image_size)) > 0.8).astype(np.uint8) * 255
+            Image.fromarray(image).save(self.rgb_dir / f"tile_{idx:03d}.png")
+            Image.fromarray(mask).save(self.mask_dir / f"tile_{idx:03d}.tif")
+
+        self.base_config = {
+            "project": {"seed": 42},
+            "data": {
+                "rgb_dir": str(self.rgb_dir),
+                "mask_dir": str(self.mask_dir),
+                "image_size": self.image_size,
+                "batch_size": 1,
+                "train_ratio": 0.7,
+                "val_ratio": 0.15,
+                "test_ratio": 0.15,
+                "building_density_bins": 3,
+            },
+            "model": {
+                "architecture": "unet",
+                "deep_supervision": False,
+                "encoder_filters": [16, 32, 64, 128, 256],
+                "dropout_rate": 0.1,
+            },
+            "loss": {
+                "strategy": "single",
+                "pixel": {"type": "bce_iou", "weight": 1.0},
+                "boundary": {"enabled": False, "weight": 0.0},
+                "shape": {"enabled": False, "weight": 0.0},
+            },
+            "training": {
+                "epochs": 2,
+                "learning_rate": 1e-4,
+                "gradient_clip_norm": 1.0,
+                "lr_scheduler": {"type": "cosine", "warmup_epochs": 1, "min_lr": 1e-7},
+                "early_stopping": {"monitor": "val_iou", "patience": 2, "mode": "max"},
+            },
+        }
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+        tf.keras.backend.clear_session()
+        gc.collect()
+
+    def _build_datasets(self):
+        loader = BuildingSegmentationDataset(
+            DatasetConfig(
+                rgb_dir=str(self.rgb_dir),
+                mask_dir=str(self.mask_dir),
+                image_size=self.image_size,
+                batch_size=1,
+                seed=42,
+            ),
+            skipped_log_path=str(Path(self.tmp.name) / "skipped.txt"),
+        )
+        loader.validate_pairs()
+        split = StratifiedSplitter(0.7, 0.15, 0.15, bins=3, seed=42).split(loader.get_density_labels())
+        train_ds = loader.get_tf_dataset(split["train"], augment=False, shuffle=False)
+        val_ds = loader.get_tf_dataset(split["val"], augment=False, shuffle=False)
+        test_ds = loader.get_tf_dataset(split["test"], augment=False, shuffle=False)
+        return train_ds, val_ds, test_ds
+
+    def test_single_objective_runs(self) -> None:
+        cfg = json.loads(json.dumps(self.base_config))
+        cfg["loss"] = dict(self.base_config["loss"])
+        cfg["loss"]["strategy"] = "single"
+        model = get_model(cfg)
+        ckpt = CheckpointManager(Path(self.tmp.name) / "checkpoints_single")
+        trainer = Trainer(model, cfg, Path(self.tmp.name) / "single", ckpt)
+        train_ds, val_ds, test_ds = self._build_datasets()
+        result = trainer.fit(train_ds, val_ds)
+        metrics = Evaluator().evaluate(model, test_ds)
+        self.assertGreaterEqual(len(result.history["train_loss"]), 1)
+        self.assertIn("iou", metrics)
+
+    def test_weighted_multi_loss_runs(self) -> None:
+        cfg = json.loads(json.dumps(self.base_config))
+        cfg["model"] = dict(self.base_config["model"])
+        cfg["loss"] = {
+            "strategy": "weighted",
+            "pixel": {"type": "bce_iou", "weight": 1.0},
+            "boundary": {"enabled": True, "weight": 0.2},
+            "shape": {"enabled": True, "weight": 0.1},
+        }
+        model = get_model(cfg)
+        ckpt = CheckpointManager(Path(self.tmp.name) / "checkpoints_weighted")
+        trainer = Trainer(model, cfg, Path(self.tmp.name) / "weighted", ckpt)
+        train_ds, val_ds, _ = self._build_datasets()
+        result = trainer.fit(train_ds, val_ds)
+        self.assertGreaterEqual(len(result.history["val_loss"]), 1)
+
+    def test_mgda_runs(self) -> None:
+        cfg = json.loads(json.dumps(self.base_config))
+        cfg["model"] = dict(self.base_config["model"])
+        cfg["loss"] = {
+            "strategy": "mgda",
+            "pixel": {"type": "bce_iou", "weight": 1.0},
+            "boundary": {"enabled": True, "weight": 0.2},
+            "shape": {"enabled": True, "weight": 0.1},
+        }
+        cfg["mgda"] = {"max_iterations": 10, "tolerance": 1e-6, "normalize_gradients": True}
+        model = get_model(cfg)
+        ckpt = CheckpointManager(Path(self.tmp.name) / "checkpoints_mgda")
+        trainer = Trainer(model, cfg, Path(self.tmp.name) / "mgda", ckpt)
+        train_ds, val_ds, _ = self._build_datasets()
+        result = trainer.fit(train_ds, val_ds)
+        self.assertTrue(isinstance(result.mgda_alpha_history, list))
+        alpha_path = Path(self.tmp.name) / "mgda" / "mgda_alphas.json"
+        self.assertTrue(alpha_path.exists())
+        saved_history = json.loads(alpha_path.read_text(encoding="utf-8"))
+        self.assertTrue(isinstance(saved_history, list))
+
+    def test_lr_scheduler_decreases(self) -> None:
+        cfg = json.loads(json.dumps(self.base_config))
+        cfg["training"] = dict(self.base_config["training"])
+        cfg["training"]["epochs"] = 3
+        model = get_model(cfg)
+        ckpt = CheckpointManager(Path(self.tmp.name) / "checkpoints_lr")
+        trainer = Trainer(model, cfg, Path(self.tmp.name) / "lr", ckpt)
+        train_ds, val_ds, _ = self._build_datasets()
+        result = trainer.fit(train_ds, val_ds)
+        self.assertTrue(len(result.history["lr"]) >= 1)
+
+    def test_early_stopping_triggers(self) -> None:
+        cfg = json.loads(json.dumps(self.base_config))
+        cfg["training"] = dict(self.base_config["training"])
+        cfg["training"]["epochs"] = 6
+        cfg["training"]["early_stopping"] = {
+            "monitor": "val_iou",
+            "patience": 1,
+            "mode": "max",
+            "min_delta": 10.0,
+        }
+        model = get_model(cfg)
+        ckpt = CheckpointManager(Path(self.tmp.name) / "checkpoints_es")
+        trainer = Trainer(model, cfg, Path(self.tmp.name) / "es", ckpt)
+        train_ds, val_ds, _ = self._build_datasets()
+        result = trainer.fit(train_ds, val_ds)
+        self.assertTrue(result.stopped_early)
+
+    def test_training_resumes_from_checkpoint(self) -> None:
+        cfg = json.loads(json.dumps(self.base_config))
+        cfg["training"] = dict(self.base_config["training"])
+        cfg["training"]["epochs"] = 1
+        cfg["checkpointing"] = {"auto_resume": True}
+        model = get_model(cfg)
+        run_dir = Path(self.tmp.name) / "resume"
+        ckpt = CheckpointManager(run_dir / "checkpoints")
+        trainer = Trainer(model, cfg, run_dir, ckpt)
+        train_ds, val_ds, _ = self._build_datasets()
+        first = trainer.fit(train_ds, val_ds)
+        self.assertEqual(len(first.history["train_loss"]), 1)
+
+        resumed_cfg = json.loads(json.dumps(cfg))
+        resumed_cfg["training"]["epochs"] = 3
+        resumed_model = get_model(resumed_cfg)
+        resumed_trainer = Trainer(resumed_model, resumed_cfg, run_dir, ckpt)
+        resumed = resumed_trainer.fit(train_ds, val_ds)
+        self.assertTrue(resumed.resumed_from_checkpoint)
+        self.assertGreaterEqual(resumed.start_epoch, 1)
+        self.assertGreaterEqual(len(resumed.history["train_loss"]), 3)
+        resumed_trainer.dual_logger.close()
+
+    def test_training_skips_when_checkpoint_already_complete(self) -> None:
+        cfg = json.loads(json.dumps(self.base_config))
+        cfg["training"] = dict(self.base_config["training"])
+        cfg["training"]["epochs"] = 1
+        cfg["checkpointing"] = {"auto_resume": True}
+        run_dir = Path(self.tmp.name) / "resume_complete"
+
+        model = get_model(cfg)
+        ckpt = CheckpointManager(run_dir / "checkpoints")
+        trainer = Trainer(model, cfg, run_dir, ckpt)
+        train_ds, val_ds, _ = self._build_datasets()
+        first = trainer.fit(train_ds, val_ds)
+        self.assertEqual(len(first.history["train_loss"]), 1)
+
+        resumed_model = get_model(cfg)
+        resumed_trainer = Trainer(resumed_model, cfg, run_dir, ckpt)
+        resumed = resumed_trainer.fit(train_ds, val_ds)
+        self.assertTrue(resumed.resumed_from_checkpoint)
+        self.assertEqual(resumed.start_epoch, 1)
+        self.assertEqual(len(resumed.history["train_loss"]), 1)
+
+    def test_deep_supervision_weighted_training_runs(self) -> None:
+        cfg = json.loads(json.dumps(self.base_config))
+        cfg["model"] = dict(self.base_config["model"])
+        cfg["model"]["architecture"] = "unetpp"
+        cfg["model"]["deep_supervision"] = True
+        cfg["loss"] = {
+            "strategy": "weighted",
+            "pixel": {"type": "bce_iou", "weight": 1.0},
+            "boundary": {"enabled": True, "weight": 0.2},
+            "shape": {"enabled": False, "weight": 0.0},
+            "deep_supervision": {"enabled": True, "weights": [0.5, 0.3, 0.15, 0.05]},
+        }
+        model = get_model(cfg)
+        ckpt = CheckpointManager(Path(self.tmp.name) / "checkpoints_deepsup")
+        trainer = Trainer(model, cfg, Path(self.tmp.name) / "deepsup", ckpt)
+        train_ds, val_ds, _ = self._build_datasets()
+        result = trainer.fit(train_ds, val_ds)
+        self.assertGreaterEqual(len(result.history["val_loss"]), 1)
+
+
+
+==== END FILE ====
+---- FILE: Codes/01/tests/test_visualization.py
+
+"""Visualization module tests."""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from PIL import Image
+
+from data.loader import BuildingSegmentationDataset, DatasetConfig
+from data.splitter import StratifiedSplitter
+from experiments.pareto_experiment import ParetoExperiment
+from models.complexity import ModelComplexityAnalyzer
+from models.unet import UNet
+from models.unetpp import UNetPlusPlus
+from visualization.boundary_overlay import generate_boundary_overlay
+from visualization.complexity_plot import generate_complexity_plot
+from visualization.error_maps import generate_error_maps
+from visualization.latex_tables import dataframe_to_latex
+from visualization.loss_curves import generate_loss_curves
+from visualization.pareto_plot import generate_pareto_2d, generate_pareto_3d
+from visualization.prediction_grid import generate_prediction_grid
+
+
+def _write_rgb(path: Path, seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    image = (rng.random((256, 256, 3)) * 255).astype(np.uint8)
+    Image.fromarray(image).save(path)
+
+
+def _write_mask(path: Path, seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    mask = (rng.random((256, 256)) > 0.85).astype(np.uint8) * 255
+    Image.fromarray(mask).save(path)
+
+
+class TestVisualization(unittest.TestCase):
+    """Ensure visualization utilities generate expected artifacts."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        rgb_dir = self.root / "RGB"
+        mask_dir = self.root / "Mask"
+        rgb_dir.mkdir(parents=True, exist_ok=True)
+        mask_dir.mkdir(parents=True, exist_ok=True)
+        for idx in range(6):
+            _write_rgb(rgb_dir / f"tile_{idx:03d}.png", idx)
+            _write_mask(mask_dir / f"tile_{idx:03d}.tif", idx)
+
+        loader = BuildingSegmentationDataset(
+            DatasetConfig(
+                rgb_dir=str(rgb_dir),
+                mask_dir=str(mask_dir),
+                image_size=256,
+                batch_size=2,
+                seed=42,
+            ),
+            skipped_log_path=str(self.root / "skipped.txt"),
+        )
+        loader.validate_pairs()
+        split = StratifiedSplitter(0.7, 0.15, 0.15, bins=3, seed=42).split(loader.get_density_labels())
+        self.dataset = loader.get_tf_dataset(split["test"] or split["val"] or split["train"], augment=False)
+        self.models = {"unet": UNet()}
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_prediction_grid_saves(self) -> None:
+        generate_prediction_grid(self.models, self.dataset, num_samples=2, save_path=str(self.root / "pred_grid"))
+        self.assertTrue((self.root / "pred_grid.png").exists())
+        self.assertTrue((self.root / "pred_grid.pdf").exists())
+
+    def test_boundary_overlay_saves(self) -> None:
+        generate_boundary_overlay(self.models, self.dataset, num_samples=2, save_path=str(self.root / "boundary"))
+        self.assertTrue((self.root / "boundary.png").exists())
+
+    def test_error_maps_saves(self) -> None:
+        generate_error_maps(self.models, self.dataset, num_samples=2, save_path=str(self.root / "errors"))
+        self.assertTrue((self.root / "errors.png").exists())
+
+    def test_pareto_plot_saves(self) -> None:
+        results = pd.DataFrame(
+            {
+                "obj_iou": [0.2, 0.1, 0.3],
+                "obj_boundary": [0.4, 0.5, 0.2],
+                "obj_convexity": [0.3, 0.2, 0.4],
+            }
+        )
+        generate_pareto_2d(results, results.iloc[[0, 1]], "obj_iou", "obj_boundary", save_path=str(self.root / "pareto2d"))
+        generate_pareto_3d(
+            results,
+            results.iloc[[0, 1]],
+            "obj_iou",
+            "obj_boundary",
+            "obj_convexity",
+            save_path=str(self.root / "pareto3d"),
+        )
+        self.assertTrue((self.root / "pareto2d.png").exists())
+        self.assertTrue((self.root / "pareto3d.png").exists())
+
+    def test_loss_curves_saves(self) -> None:
+        csv_path = self.root / "logs.csv"
+        pd.DataFrame(
+            {
+                "epoch": [1, 2, 3],
+                "train_loss": [1.0, 0.8, 0.6],
+                "val_loss": [1.1, 0.9, 0.7],
+            }
+        ).to_csv(csv_path, index=False)
+        generate_loss_curves({"exp": str(csv_path)}, save_path=str(self.root / "loss_curves"))
+        self.assertTrue((self.root / "loss_curves.png").exists())
+
+    def test_complexity_plot_saves(self) -> None:
+        df = pd.DataFrame(
+            {
+                "experiment_name": ["a", "b"],
+                "flops": [1e9, 2e9],
+                "iou": [0.6, 0.7],
+                "total_params": [1e6, 2e6],
+                "strategy": ["unet_single", "unet_mgda"],
+            }
+        )
+        generate_complexity_plot(df, save_path=str(self.root / "complexity"))
+        self.assertTrue((self.root / "complexity.png").exists())
+
+    def test_complexity_analyzer_handles_subclassed_models(self) -> None:
+        analyzer = ModelComplexityAnalyzer(input_shape=(256, 256, 3), num_runs=1, num_warmup=1)
+        metrics = analyzer.analyze(UNetPlusPlus(deep_supervision=True))
+        self.assertIn("flops", metrics)
+        self.assertGreaterEqual(metrics["total_params"], 0)
+
+    def test_latex_table_valid(self) -> None:
+        df = pd.DataFrame({"Model": ["A"], "IoU": [0.9]})
+        latex = dataframe_to_latex(
+            df,
+            caption="Test",
+            label="tab:test",
+            save_path=str(self.root / "table.tex"),
+        )
+        self.assertIn("\\begin{tabular}", latex)
+        self.assertTrue((self.root / "table.tex").exists())
+
+    def test_pareto_experiment_save_outputs_uses_objective_columns(self) -> None:
+        experiment = ParetoExperiment(self.root / "pareto_tables")
+        results = pd.DataFrame(
+            {
+                "pixel_weight": [0.6, 0.8],
+                "boundary_weight": [0.2, 0.1],
+                "shape_weight": [0.1, 0.2],
+                "iou": [0.75, 0.70],
+                "hausdorff": [0.2, 0.25],
+                "convexity": [0.9, 0.85],
+            }
+        )
+        front = experiment.compute_pareto_front(results)
+        experiment.save_outputs(results, front)
+        saved = pd.read_csv(self.root / "pareto_tables" / "pareto_points.csv")
+        self.assertIn("obj_iou", saved.columns)
+        self.assertTrue((self.root / "pareto_tables" / "pareto_2d.png").exists())
+
+
+==== END FILE ====
+---- FILE: Codes/01/training/__init__.py
+
+"""Training package for the segmentation framework."""
+
+from .callbacks import GradientNormLogger, MGDAAlphaLogger, TrainingTimeLogger, ValidationImageLogger
+from .checkpoint_manager import CheckpointManager
+from .early_stopping import MultiMetricEarlyStopping
+from .evaluator import Evaluator
+from .trainer import Trainer, TrainingResult
+
+__all__ = [
+    "GradientNormLogger",
+    "MGDAAlphaLogger",
+    "TrainingTimeLogger",
+    "ValidationImageLogger",
+    "CheckpointManager",
+    "MultiMetricEarlyStopping",
+    "Evaluator",
+    "Trainer",
+    "TrainingResult",
+]
+
+
+==== END FILE ====
+---- FILE: Codes/01/training/callbacks.py
+
+"""Custom callbacks used by the training workflow."""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import numpy as np
+import tensorflow as tf
+
+
+@dataclass
+class MGDAAlphaLogger:
+    """Track MGDA alpha values per epoch."""
+
+    history: List[Dict[str, float]] = field(default_factory=list)
+
+    def log(self, epoch: int, alphas: Dict[str, float]) -> None:
+        self.history.append({"epoch": float(epoch), **{k: float(v) for k, v in alphas.items()}})
+
+
+@dataclass
+class ValidationImageLogger:
+    """Persist validation predictions every N epochs."""
+
+    output_dir: Path
+    interval: int = 5
+    sample_batch: Optional[tuple[tf.Tensor, tf.Tensor]] = None
+
+    def __post_init__(self) -> None:
+        self.output_dir = Path(self.output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def log(self, epoch: int, model: tf.keras.Model) -> None:
+        if self.sample_batch is None or epoch % self.interval != 0:
+            return
+        images, _ = self.sample_batch
+        preds = model(images, training=False)
+        if isinstance(preds, list):
+            preds = preds[-1]
+        preds = tf.cast(preds > 0.5, tf.float32).numpy()
+        np.save(self.output_dir / f"val_preds_epoch_{epoch:03d}.npy", preds)
+
+
+@dataclass
+class GradientNormLogger:
+    """Track gradient norms per epoch."""
+
+    norms: List[Dict[str, float]] = field(default_factory=list)
+
+    def log(self, epoch: int, gradients: List[tf.Tensor | None]) -> None:
+        valid = [float(tf.norm(g).numpy()) for g in gradients if g is not None]
+        self.norms.append(
+            {
+                "epoch": float(epoch),
+                "mean_norm": float(np.mean(valid)) if valid else 0.0,
+                "max_norm": float(np.max(valid)) if valid else 0.0,
+            }
+        )
+
+
+@dataclass
+class TrainingTimeLogger:
+    """Record per-epoch and cumulative timing."""
+
+    start_time: float = field(default_factory=time.time)
+    epoch_times: List[float] = field(default_factory=list)
+
+    def log_epoch(self, epoch_duration: float) -> Dict[str, float]:
+        self.epoch_times.append(float(epoch_duration))
+        return {
+            "epoch_time_seconds": float(epoch_duration),
+            "total_time_seconds": float(time.time() - self.start_time),
+        }
+
+
+
+==== END FILE ====
+---- FILE: Codes/01/training/checkpoint_manager.py
+
+"""Checkpoint manager with optimizer and MGDA state persistence."""
+
+from __future__ import annotations
+
+import pickle
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Mapping, Optional, Tuple
+
+import numpy as np
+import tensorflow as tf
+
+from optimization.mgda import MGDASolver
+
+
+@dataclass
+class CheckpointManager:
+    """Manage model/optimizer checkpoint lifecycle."""
+
+    checkpoint_dir: Path
+    best_metric_name: str = "val_iou"
+
+    def __post_init__(self) -> None:
+        self.checkpoint_dir = Path(self.checkpoint_dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.best_iou = -float("inf")
+        self.best_boundary = float("inf")
+
+    def save(
+        self,
+        model: tf.keras.Model,
+        optimizer: tf.keras.optimizers.Optimizer,
+        epoch: int,
+        metrics: Mapping[str, float],
+        mgda_solver: Optional[MGDASolver] = None,
+        extra_state: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        """Persist model snapshots and training metadata."""
+        last_weights_path = self.checkpoint_dir / "last_epoch.weights.h5"
+        legacy_model_path_h5 = self.checkpoint_dir / "last_epoch.h5"
+        legacy_model_save_dir = self.checkpoint_dir / "last_epoch"
+        model.save_weights(last_weights_path)
+        # Preserve a full-model artifact only when Keras can serialize the model graph.
+        if self._supports_hdf5_export(model):
+            try:
+                model.save(legacy_model_path_h5, include_optimizer=False)
+            except (NotImplementedError, ValueError, OSError):
+                pass
+        elif self._supports_saved_model_export(model):
+            try:
+                model.save(legacy_model_save_dir, include_optimizer=False)
+            except (NotImplementedError, ValueError, OSError):
+                pass
+
+        val_iou = float(metrics.get("val_iou", -float("inf")))
+        if val_iou >= self.best_iou:
+            self.best_iou = val_iou
+            model.save_weights(self.checkpoint_dir / "best_iou.weights.h5")
+
+        val_boundary = float(metrics.get("val_boundary", float("inf")))
+        if val_boundary <= self.best_boundary:
+            self.best_boundary = val_boundary
+            model.save_weights(self.checkpoint_dir / "best_boundary.weights.h5")
+
+        training_state = {
+            "epoch": epoch,
+            "best_iou": self.best_iou,
+            "best_boundary": self.best_boundary,
+            "optimizer_weights": self._serialize_optimizer_state(optimizer),
+            "mgda_alpha_history": mgda_solver.get_alpha_history() if mgda_solver else None,
+            "metrics": dict(metrics),
+        }
+        if extra_state:
+            training_state["extra_state"] = dict(extra_state)
+        with (self.checkpoint_dir / "training_state.pkl").open("wb") as handle:
+            pickle.dump(training_state, handle)
+
+    @staticmethod
+    def _serialize_optimizer_state(optimizer: tf.keras.optimizers.Optimizer) -> list:
+        """Capture optimizer state across TF/Keras variants."""
+        if hasattr(optimizer, "get_weights"):
+            try:
+                return list(optimizer.get_weights())
+            except Exception:
+                pass
+        return [np.array(variable.numpy()) for variable in optimizer.variables]
+
+    @staticmethod
+    def _supports_hdf5_export(model: tf.keras.Model) -> bool:
+        """Return True for graph-network models that can be written to HDF5."""
+        return bool(getattr(model, "_is_graph_network", False))
+
+    @staticmethod
+    def _supports_saved_model_export(model: tf.keras.Model) -> bool:
+        """Return True when a non-graph model is still worth exporting."""
+        return isinstance(model, tf.keras.Sequential)
+
+    def load_latest(self) -> Tuple[Optional[Path], Optional[dict]]:
+        """Load latest checkpoint metadata."""
+        model_path = self.checkpoint_dir / "last_epoch.weights.h5"
+        state_path = self.checkpoint_dir / "training_state.pkl"
+        if not model_path.exists() or not state_path.exists():
+            return None, None
+
+        with state_path.open("rb") as handle:
+            state = pickle.load(handle)
+        self.best_iou = float(state.get("best_iou", self.best_iou))
+        self.best_boundary = float(state.get("best_boundary", self.best_boundary))
+        return model_path, state
+
+    @staticmethod
+    def restore_optimizer_state(
+        optimizer: tf.keras.optimizers.Optimizer,
+        state: Optional[dict],
+        model: Optional[tf.keras.Model] = None,
+    ) -> bool:
+        """Best-effort optimizer state restore across TF/Keras variants."""
+        if not state:
+            return False
+        weights = state.get("optimizer_weights")
+        if not isinstance(weights, list) or not weights:
+            return False
+        try:
+            if hasattr(optimizer, "build") and model is not None:
+                optimizer.build(model.trainable_variables)
+        except Exception:
+            pass
+        if model is not None:
+            try:
+                zero_grads = [(tf.zeros_like(variable), variable) for variable in model.trainable_variables]
+                if zero_grads:
+                    optimizer.apply_gradients(zero_grads)
+            except Exception:
+                pass
+        try:
+            if hasattr(optimizer, "set_weights"):
+                optimizer.set_weights(weights)
+                return True
+        except Exception:
+            pass
+        try:
+            variables = list(optimizer.variables)
+            if len(variables) != len(weights):
+                return False
+            for variable, value in zip(variables, weights):
+                variable.assign(value)
+            return True
+        except Exception:
+            return False
+
+    def has_checkpoint(self) -> bool:
+        """Return True if resumable checkpoint artifacts exist."""
+        return (self.checkpoint_dir / "last_epoch.weights.h5").exists()
+
+    def get_best_metric(self) -> float:
+        """Return best tracked metric value."""
+        return self.best_iou
+
+
+==== END FILE ====
+---- FILE: Codes/01/training/early_stopping.py
+
+"""Multi-metric early stopping utility."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Dict
+
+
+@dataclass
+class MultiMetricEarlyStopping:
+    """Monitor one primary metric and track best epoch/values."""
+
+    monitor: str
+    patience: int
+    mode: str = "max"
+    min_delta: float = 1e-4
+    best_value: float = field(init=False)
+    best_epoch: int = field(default=0, init=False)
+    wait_count: int = field(default=0, init=False)
+    _epoch: int = field(default=0, init=False)
+    _best_metrics: Dict[str, float] = field(default_factory=dict, init=False)
+
+    def __post_init__(self) -> None:
+        self.best_value = -float("inf") if self.mode == "max" else float("inf")
+
+    def _is_improvement(self, value: float) -> bool:
+        if self.mode == "max":
+            return value > (self.best_value + self.min_delta)
+        return value < (self.best_value - self.min_delta)
+
+    def step(self, metrics_dict: Dict[str, float]) -> bool:
+        """Update stopping state and return ``True`` when training should stop."""
+        self._epoch += 1
+        value = float(metrics_dict.get(self.monitor, float("nan")))
+        if value != value:  # NaN guard
+            self.wait_count += 1
+            return self.wait_count >= self.patience
+
+        if self._is_improvement(value):
+            self.best_value = value
+            self.best_epoch = self._epoch
+            self.wait_count = 0
+            self._best_metrics = dict(metrics_dict)
+            return False
+
+        self.wait_count += 1
+        return self.wait_count >= self.patience
+
+    def get_best_epoch(self) -> int:
+        """Return the best epoch number (1-indexed)."""
+        return self.best_epoch
+
+    def get_best_metrics(self) -> Dict[str, float]:
+        """Return metrics snapshot captured at best epoch."""
+        return dict(self._best_metrics)
+
+    def state_dict(self) -> Dict[str, float | int | Dict[str, float]]:
+        """Serialize early-stopping state for checkpoint resume."""
+        return {
+            "monitor": self.monitor,
+            "patience": self.patience,
+            "mode": self.mode,
+            "min_delta": self.min_delta,
+            "best_value": self.best_value,
+            "best_epoch": self.best_epoch,
+            "wait_count": self.wait_count,
+            "epoch": self._epoch,
+            "best_metrics": dict(self._best_metrics),
+        }
+
+    def load_state_dict(self, state: Dict[str, float | int | Dict[str, float]]) -> None:
+        """Restore serialized early-stopping state."""
+        self.best_value = float(state.get("best_value", self.best_value))
+        self.best_epoch = int(state.get("best_epoch", self.best_epoch))
+        self.wait_count = int(state.get("wait_count", self.wait_count))
+        self._epoch = int(state.get("epoch", self._epoch))
+        self._best_metrics = dict(state.get("best_metrics", self._best_metrics))
+
+
+==== END FILE ====
+---- FILE: Codes/01/training/evaluator.py
+
+"""Evaluation helpers for trained segmentation models."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, List, Tuple
+
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+
+from training.metrics import (
+    boundary_f1,
+    boundary_iou,
+    compactness_score,
+    dice_score,
+    iou_score,
+    pixel_accuracy,
+    precision_score,
+    recall_score,
+)
+
+
+@dataclass
+class Evaluator:
+    """Evaluate segmentation models on tf.data datasets."""
+
+    threshold: float = 0.5
+
+    def _predict(self, model: tf.keras.Model, x_batch: tf.Tensor) -> tf.Tensor:
+        y_pred = model(x_batch, training=False)
+        if isinstance(y_pred, list):
+            y_pred = y_pred[-1]
+        return tf.cast(y_pred, tf.float32)
+
+    def evaluate(self, model: tf.keras.Model, dataset: tf.data.Dataset, threshold: float = 0.5) -> Dict[str, float]:
+        """Compute aggregate metrics over a dataset."""
+        self.threshold = threshold
+        metric_values: Dict[str, List[float]] = {
+            "iou": [],
+            "dice": [],
+            "precision": [],
+            "recall": [],
+            "pixel_accuracy": [],
+            "boundary_iou": [],
+            "boundary_f1": [],
+            "compactness": [],
+        }
+
+        for x_batch, y_batch in dataset:
+            y_pred = self._predict(model, x_batch)
+            y_pred = tf.cast(y_pred > threshold, tf.float32)
+            metric_values["iou"].append(float(iou_score(y_batch, y_pred).numpy()))
+            metric_values["dice"].append(float(dice_score(y_batch, y_pred).numpy()))
+            metric_values["precision"].append(float(precision_score(y_batch, y_pred).numpy()))
+            metric_values["recall"].append(float(recall_score(y_batch, y_pred).numpy()))
+            metric_values["pixel_accuracy"].append(float(pixel_accuracy(y_batch, y_pred).numpy()))
+            metric_values["boundary_iou"].append(float(boundary_iou(y_batch, y_pred).numpy()))
+            metric_values["boundary_f1"].append(float(boundary_f1(y_batch, y_pred).numpy()))
+            metric_values["compactness"].append(float(compactness_score(y_batch, y_pred).numpy()))
+
+        return {name: float(np.mean(values)) if values else 0.0 for name, values in metric_values.items()}
+
+    def evaluate_per_image(self, model: tf.keras.Model, dataset: tf.data.Dataset) -> pd.DataFrame:
+        """Return per-image metric table."""
+        rows: List[Dict[str, float]] = []
+        image_index = 0
+        for x_batch, y_batch in dataset:
+            y_pred = self._predict(model, x_batch)
+            y_pred = tf.cast(y_pred > self.threshold, tf.float32)
+            batch_size = int(x_batch.shape[0])
+            for idx in range(batch_size):
+                gt = y_batch[idx : idx + 1]
+                pred = y_pred[idx : idx + 1]
+                rows.append(
+                    {
+                        "image_index": image_index,
+                        "iou": float(iou_score(gt, pred).numpy()),
+                        "dice": float(dice_score(gt, pred).numpy()),
+                        "precision": float(precision_score(gt, pred).numpy()),
+                        "recall": float(recall_score(gt, pred).numpy()),
+                        "pixel_accuracy": float(pixel_accuracy(gt, pred).numpy()),
+                        "boundary_iou": float(boundary_iou(gt, pred).numpy()),
+                        "boundary_f1": float(boundary_f1(gt, pred).numpy()),
+                    }
+                )
+                image_index += 1
+        return pd.DataFrame(rows)
+
+    def compute_confusion_matrix(self, model: tf.keras.Model, dataset: tf.data.Dataset) -> np.ndarray:
+        """Compute pixel-level confusion matrix."""
+        tp = tn = fp = fn = 0
+        for x_batch, y_batch in dataset:
+            y_pred = self._predict(model, x_batch)
+            y_pred = tf.cast(y_pred > self.threshold, tf.int32).numpy()
+            y_true = tf.cast(y_batch > 0.5, tf.int32).numpy()
+            tp += int(np.sum((y_true == 1) & (y_pred == 1)))
+            tn += int(np.sum((y_true == 0) & (y_pred == 0)))
+            fp += int(np.sum((y_true == 0) & (y_pred == 1)))
+            fn += int(np.sum((y_true == 1) & (y_pred == 0)))
+        return np.array([[tn, fp], [fn, tp]], dtype=np.int64)
+
+
+==== END FILE ====
+---- FILE: Codes/01/training/metrics.py
+
+"""Segmentation evaluation metrics and mask processing utilities.
+
+This module defines a collection of metrics that can be used during training,
+validation, and experiment reporting for semantic segmentation tasks.
+Each function expects ground truth masks `y_true` and predicted masks
+`y_pred`, where `y_pred` may be a probability map from the model.
+
+Metrics in this module are designed to capture both region-level and
+shape-level quality, including pixel accuracy, overlap, boundary alignment,
+and approximate topology.
+"""
+
+import numpy as np
+import tensorflow as tf
+
+try:
+    from skimage.measure import label as sk_label
+except ImportError:
+    sk_label = None
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+
+def _extract_tensor(x):
+    """Helper to extract tensor from tuple/list if needed."""
+    if isinstance(x, (tuple, list)):
+        return tf.convert_to_tensor(x[0])
+    return x
+
+def threshold_prediction(y_pred, threshold=0.5):
+    """Convert model scores into a binary foreground/background mask.
+
+    This helper is useful when most metrics require a binary prediction.
+    It can be applied to logits or probability outputs from the network.
+    """
+    y_pred = _extract_tensor(y_pred)
+    return tf.cast(y_pred > threshold, tf.float32)
+
+
+def pixel_accuracy(y_true, y_pred, threshold=0.5, eps=1e-7):
+    """Compute pixel-wise classification accuracy for a single mask.
+
+    This metric counts how many pixels match between prediction and truth.
+    It is a stable baseline measure for segmentation quality, especially
+    when the target object dominates the image.
+    """
+    # Convert tuple to tensor if necessary
+    if isinstance(y_true, tuple):
+        y_true = tf.convert_to_tensor(y_true[0])
+
+    y_pred = threshold_prediction(y_pred, threshold)
+    correct = tf.cast(
+        tf.equal(tf.cast(y_true > 0.5, tf.bool), tf.cast(y_pred > 0.5, tf.bool)),
+        tf.float32,
+    )
+    return tf.reduce_mean(correct)
+
+
+def iou_score(y_true, y_pred, eps=1e-7):
+    """Compute intersection over union (IoU) between masks.
+
+    IoU is the standard evaluation measure in segmentation benchmarks.
+    It penalizes both false positives and false negatives by comparing the
+    overlap of the predicted and ground truth regions.
+    """
+    y_true = _extract_tensor(y_true)
+    y_pred = threshold_prediction(y_pred)
+    inter = tf.reduce_sum(y_true * y_pred)
+    union = tf.reduce_sum(y_true + y_pred) - inter
+    return (inter + eps) / (union + eps)
+
+
+def dice_score(y_true, y_pred, eps=1e-7):
+    """Compute the Dice similarity coefficient for predicted masks.
+
+    Dice is closely related to IoU and is often used in medical and remote
+    sensing segmentation tasks. It emphasizes overlap and is robust when
+    object size is small relative to the image.
+    """
+    y_true = _extract_tensor(y_true)
+    y_pred = threshold_prediction(y_pred)
+    inter = tf.reduce_sum(y_true * y_pred)
+    denom = tf.reduce_sum(y_true) + tf.reduce_sum(y_pred)
+    return (2.0 * inter + eps) / (denom + eps)
+
+
+def precision_score(y_true, y_pred, eps=1e-7):
+    """Compute positive predictive value (precision) for the foreground class.
+
+    Precision captures how many predicted object pixels are actually correct.
+    It is useful when false positives are more damaging than false negatives.
+    """
+    y_true = _extract_tensor(y_true)
+    y_pred = threshold_prediction(y_pred)
+    tp = tf.reduce_sum(y_true * y_pred)
+    fp = tf.reduce_sum((1.0 - y_true) * y_pred)
+    return (tp + eps) / (tp + fp + eps)
+
+
+def recall_score(y_true, y_pred, eps=1e-7):
+    """Compute recall (sensitivity) for the segmented object.
+
+    Recall measures how much of the true object region was recovered by the
+    prediction. It is useful when missing object pixels is expensive.
+    """
+    y_true = _extract_tensor(y_true)
+    y_pred = threshold_prediction(y_pred)
+    tp = tf.reduce_sum(y_true * y_pred)
+    fn = tf.reduce_sum(y_true * (1.0 - y_pred))
+    return (tp + eps) / (tp + fn + eps)
+
+
+def _boundary_map(y_true, y_pred, pool_size=3):
+    """Compute approximate binary boundary masks for true and predicted masks.
+
+    This internal helper uses average pooling to estimate edges from the
+    segmentation masks, which can then be compared via boundary-based metrics.
+    """
+    y_true = _extract_tensor(y_true)
+    y_pred = _extract_tensor(y_pred)
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+    true_edge = tf.abs(y_true - tf.nn.avg_pool2d(y_true, pool_size, 1, "SAME"))
+    pred_edge = tf.abs(y_pred - tf.nn.avg_pool2d(y_pred, pool_size, 1, "SAME"))
+    true_boundary = tf.cast(true_edge > 0.1, tf.float32)
+    pred_boundary = tf.cast(pred_edge > 0.1, tf.float32)
+    return true_boundary, pred_boundary
+
+
+def boundary_iou(y_true, y_pred, eps=1e-7):
+    """Evaluate how well predicted boundaries align with ground truth edges.
+
+    Boundary IoU is valuable for building footprint segmentation because the
+    contour quality is often more important than pure region overlap.
+    """
+    y_pred = threshold_prediction(y_pred)
+    true_boundary, pred_boundary = _boundary_map(y_true, y_pred)
+    inter = tf.reduce_sum(true_boundary * pred_boundary)
+    union = tf.reduce_sum(true_boundary + pred_boundary) - inter
+    return (inter + eps) / (union + eps)
+
+
+def boundary_f1(y_true, y_pred, eps=1e-7):
+    """Compute the boundary F1 score using predicted and true edge maps.
+
+    This metric balances boundary precision and recall, providing a single
+    score for edge alignment quality.
+    """
+    y_pred = threshold_prediction(y_pred)
+    true_boundary, pred_boundary = _boundary_map(y_true, y_pred)
+    tp = tf.reduce_sum(true_boundary * pred_boundary)
+    precision = (tp + eps) / (tf.reduce_sum(pred_boundary) + eps)
+    recall = (tp + eps) / (tf.reduce_sum(true_boundary) + eps)
+    return (2.0 * precision * recall) / (precision + recall + eps)
+
+
+def compactness_score(y_true, y_pred, eps=1e-7):
+    """Measure the compactness of the predicted shape.
+
+    Compactness is defined as area / perimeter^2, encouraging predictions that
+    are regular and not overly fragmented. It is especially meaningful for
+    semantic objects with expected compact geometry.
+    """
+    y_true = _extract_tensor(y_true)
+    y_pred = threshold_prediction(y_pred)
+    area = tf.reduce_sum(y_pred)
+    edge_map = tf.abs(y_pred - tf.nn.avg_pool2d(y_pred, 3, 1, "SAME"))
+    perimeter = tf.reduce_sum(tf.cast(edge_map > 0.1, tf.float32))
+    return (area + eps) / (perimeter * perimeter + eps)
+
+
+def region_completeness(y_true, y_pred, eps=1e-7):
+    """Alias for IoU used when describing region completeness explicitly.
+
+    This function is kept for readability in code and reports that compare
+    region completeness to boundary or shape-based metrics.
+    """
+    return iou_score(y_true, y_pred, eps=eps)
+
+
+def topological_correctness(y_true, y_pred):
+    """Approximate topological correctness using connected component counts.
+
+    This metric estimates whether the predicted segmentation preserves the
+    same number of connected components as the ground truth. When installed,
+    `scikit-image` is used for connected component labeling. If unavailable,
+    the function returns 1.0 so it does not break training.
+    """
+    y_true = _extract_tensor(y_true)
+    y_pred = _extract_tensor(y_pred)
+    if sk_label is None and cv2 is None:
+        return tf.constant(0.0)
+
+    def count_components(mask_np):
+        mask_np = np.asarray(mask_np, dtype=np.uint8)
+        if mask_np.ndim == 4 and mask_np.shape[-1] == 1:
+            mask_np = mask_np[..., 0]
+        if np.any(mask_np):
+            if sk_label is not None:
+                labeled = sk_label(mask_np)
+                return np.float32(np.max(labeled))
+            if cv2 is not None:
+                count, _ = cv2.connectedComponents(mask_np)
+                return np.float32(max(count - 1, 0))
+        return np.float32(0.0)
+
+    true_count = tf.numpy_function(count_components, [tf.cast(y_true > 0.5, tf.uint8)], tf.float32)
+    pred_count = tf.numpy_function(count_components, [tf.cast(y_pred > 0.5, tf.uint8)], tf.float32)
+    true_count = tf.maximum(true_count, 1.0)
+    diff = tf.abs(true_count - pred_count)
+    return 1.0 - diff / true_count
+
+
+==== END FILE ====

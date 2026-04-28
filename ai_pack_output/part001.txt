@@ -1,0 +1,1736 @@
+Part 2 of 16
+
+---- FILE: Codes/01/data/loader.py
+
+"""Dataset loader for building segmentation with robust pairing and tf.data output."""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Sequence, Tuple
+
+import numpy as np
+import tensorflow as tf
+
+from data.augmentation import build_augmentation_pipeline
+from data.preprocessing import (
+    compute_building_density,
+    read_mask_image,
+    safe_load_pair,
+    validate_binary_mask,
+)
+
+LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class DatasetConfig:
+    """Minimal loader configuration."""
+
+    rgb_dir: str
+    mask_dir: str
+    image_size: int
+    batch_size: int
+    num_workers: int = 4
+    prefetch_buffer: int = 2
+    seed: int = 42
+
+
+class BuildingSegmentationDataset:
+    """Load and pair RGB/mask tiles, and construct tf.data datasets."""
+
+    def __init__(self, config: DatasetConfig | Dict[str, object], skipped_log_path: str) -> None:
+        if isinstance(config, dict):
+            self.config = DatasetConfig(
+                rgb_dir=str(config["rgb_dir"]),
+                mask_dir=str(config["mask_dir"]),
+                image_size=int(config["image_size"]),
+                batch_size=int(config["batch_size"]),
+                num_workers=int(config.get("num_workers", 4)),
+                prefetch_buffer=int(config.get("prefetch_buffer", 2)),
+                seed=int(config.get("seed", 42)),
+            )
+        else:
+            self.config = config
+
+        self.rgb_dir = Path(self.config.rgb_dir)
+        self.mask_dir = Path(self.config.mask_dir)
+        self.skipped_log_path = Path(skipped_log_path)
+        self.skipped_log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.pairs: List[Tuple[Path, Path]] = []
+        self.densities: List[float] = []
+        self.background_flags: List[bool] = []
+
+    def _warn_skip(self, message: str) -> None:
+        LOGGER.warning(message)
+        with self.skipped_log_path.open("a", encoding="utf-8") as handle:
+            handle.write(message + "\n")
+
+    def scan_and_pair(self) -> List[Tuple[Path, Path]]:
+        """Scan directories and pair RGB images to masks by basename."""
+        rgb_files = sorted(self.rgb_dir.glob("*.png"))
+        mask_files = sorted(self.mask_dir.glob("*.tif"))
+
+        mask_lookup = {path.stem: path for path in mask_files}
+        pairs: List[Tuple[Path, Path]] = []
+        unmatched_rgb: List[Path] = []
+
+        for rgb_path in rgb_files:
+            mask_path = mask_lookup.get(rgb_path.stem)
+            if mask_path is not None:
+                pairs.append((rgb_path, mask_path))
+            else:
+                unmatched_rgb.append(rgb_path)
+
+        matched_mask_stems = {mask.stem for _, mask in pairs}
+        orphan_masks = [mask for mask in mask_files if mask.stem not in matched_mask_stems]
+
+        if unmatched_rgb or orphan_masks:
+            self._warn_skip(
+                "Pairing mismatch detected: "
+                f"{len(unmatched_rgb)} unmatched RGB, {len(orphan_masks)} orphan masks."
+            )
+
+        if not pairs:
+            # Fallback: sorted-order pairing for partially corrupted naming.
+            self._warn_skip("No basename matches; applying sorted-order fallback pairing.")
+            for rgb_path, mask_path in zip(rgb_files, mask_files):
+                pairs.append((rgb_path, mask_path))
+
+        self.pairs = pairs
+        return pairs
+
+    def validate_pairs(self) -> Tuple[List[Tuple[Path, Path]], List[Path]]:
+        """Validate pair readability and report orphaned/corrupted files."""
+        if not self.pairs:
+            self.scan_and_pair()
+
+        valid_pairs: List[Tuple[Path, Path]] = []
+        orphaned: List[Path] = []
+        densities: List[float] = []
+        background_flags: List[bool] = []
+
+        for rgb_path, mask_path in self.pairs:
+            try:
+                _, mask = safe_load_pair(rgb_path, mask_path, self.config.image_size)
+            except ValueError as exc:
+                orphaned.extend([rgb_path, mask_path])
+                self._warn_skip(str(exc))
+                continue
+
+            density = compute_building_density(mask)
+            if not validate_binary_mask(mask):
+                self._warn_skip(f"Non-binary mask values detected after thresholding: {mask_path}")
+
+            valid_pairs.append((rgb_path, mask_path))
+            densities.append(density)
+            background_flags.append(bool(np.isclose(density, 0.0)))
+
+        self.pairs = valid_pairs
+        self.densities = densities
+        self.background_flags = background_flags
+        return valid_pairs, orphaned
+
+    def compute_density(self, mask_path: Path) -> float:
+        """Compute building density for a single mask path."""
+        mask = read_mask_image(mask_path, self.config.image_size)
+        return compute_building_density(mask)
+
+    def load_sample(self, rgb_path: Path, mask_path: Path) -> Tuple[np.ndarray, np.ndarray]:
+        """Load and preprocess an image-mask sample."""
+        return safe_load_pair(rgb_path, mask_path, self.config.image_size)
+
+    def get_tf_dataset(
+        self,
+        indices: Sequence[int],
+        augment: bool = False,
+        augmentation_config: Dict[str, object] | None = None,
+        shuffle: bool = False,
+    ) -> tf.data.Dataset:
+        """Build tf.data dataset yielding normalized float32 image/mask tensors."""
+        if not self.pairs:
+            self.validate_pairs()
+
+        selected_pairs = [self.pairs[idx] for idx in indices]
+        image_paths = [str(pair[0]) for pair in selected_pairs]
+        mask_paths = [str(pair[1]) for pair in selected_pairs]
+
+        def _read_pair(image_path: tf.Tensor, mask_path: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
+            def _loader(image_path_bytes: bytes, mask_path_bytes: bytes) -> Tuple[np.ndarray, np.ndarray]:
+                image, mask = self.load_sample(Path(image_path_bytes.decode()), Path(mask_path_bytes.decode()))
+                return image.astype(np.float32), mask.astype(np.float32)
+
+            image, mask = tf.numpy_function(
+                _loader,
+                [image_path, mask_path],
+                [tf.float32, tf.float32],
+            )
+            image.set_shape((self.config.image_size, self.config.image_size, 3))
+            mask.set_shape((self.config.image_size, self.config.image_size, 1))
+            return image, mask
+
+        dataset = tf.data.Dataset.from_tensor_slices((image_paths, mask_paths))
+        if shuffle:
+            dataset = dataset.shuffle(
+                buffer_size=max(len(image_paths), 1),
+                seed=self.config.seed,
+                reshuffle_each_iteration=True,
+            )
+
+        dataset = dataset.map(_read_pair, num_parallel_calls=tf.data.AUTOTUNE)
+        if augment:
+            augmentation_config = augmentation_config or {}
+            augmentation_config.setdefault("seed", self.config.seed)
+            aug_fn = build_augmentation_pipeline(augmentation_config)
+            dataset = dataset.map(aug_fn, num_parallel_calls=tf.data.AUTOTUNE)
+
+        dataset = dataset.batch(self.config.batch_size, drop_remainder=False)
+        dataset = dataset.prefetch(self.config.prefetch_buffer)
+        return dataset
+
+    def get_density_labels(self) -> np.ndarray:
+        """Return cached density values as a NumPy array."""
+        if not self.densities:
+            self.validate_pairs()
+        return np.asarray(self.densities, dtype=np.float32)
+
+
+==== END FILE ====
+---- FILE: Codes/01/data/preprocessing.py
+
+"""Preprocessing utilities for satellite building segmentation."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Tuple
+
+import numpy as np
+from PIL import Image, UnidentifiedImageError
+
+
+def read_rgb_image(path: Path, image_size: int) -> np.ndarray:
+    """Read and normalize an RGB image.
+
+    Parameters
+    ----------
+    path:
+        Path to RGB image.
+    image_size:
+        Target square size.
+
+    Returns
+    -------
+    np.ndarray
+        Float32 image in range [0, 1] with shape (image_size, image_size, 3).
+    """
+    with Image.open(path) as image:
+        rgb = image.convert("RGB").resize((image_size, image_size), Image.BILINEAR)
+        array = np.asarray(rgb, dtype=np.float32) / 255.0
+    return array
+
+
+def read_mask_image(path: Path, image_size: int, threshold: float = 0.5) -> np.ndarray:
+    """Read and binarize a building mask.
+
+    Parameters
+    ----------
+    path:
+        Path to mask image.
+    image_size:
+        Target square size.
+    threshold:
+        Threshold on normalized mask values.
+
+    Returns
+    -------
+    np.ndarray
+        Float32 binary mask with shape (image_size, image_size, 1).
+    """
+    with Image.open(path) as image:
+        gray = image.convert("L").resize((image_size, image_size), Image.NEAREST)
+        values = np.asarray(gray, dtype=np.float32) / 255.0
+    binary = (values >= threshold).astype(np.float32)
+    return binary[..., np.newaxis]
+
+
+def validate_binary_mask(mask: np.ndarray) -> bool:
+    """Return True when mask values are binary."""
+    unique_values = np.unique(mask.astype(np.float32))
+    return set(unique_values.tolist()).issubset({0.0, 1.0})
+
+
+def compute_building_density(mask: np.ndarray) -> float:
+    """Compute ratio of building pixels in a binary mask."""
+    if mask.size == 0:
+        return 0.0
+    return float(np.mean(mask > 0.5))
+
+
+def safe_load_pair(
+    rgb_path: Path,
+    mask_path: Path,
+    image_size: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Load paired image and mask with unified error behavior."""
+    try:
+        image = read_rgb_image(rgb_path, image_size)
+        mask = read_mask_image(mask_path, image_size)
+    except (FileNotFoundError, UnidentifiedImageError, OSError) as exc:
+        raise ValueError(f"Could not load sample ({rgb_path}, {mask_path}): {exc}") from exc
+    return image, mask
+
+
+==== END FILE ====
+---- FILE: Codes/01/data/splitter.py
+
+"""Stratified split utilities for density-aware partitioning."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Sequence
+
+import numpy as np
+
+
+@dataclass
+class StratifiedSplitter:
+    """Split sample indices into train/val/test sets with density stratification."""
+
+    train_ratio: float
+    val_ratio: float
+    test_ratio: float
+    bins: int
+    seed: int
+
+    def split(self, densities: Sequence[float]) -> Dict[str, List[int]]:
+        """Compute deterministic stratified split.
+
+        Parameters
+        ----------
+        densities:
+            Building density per sample in [0, 1].
+        """
+        if not np.isclose(self.train_ratio + self.val_ratio + self.test_ratio, 1.0):
+            raise ValueError("Split ratios must sum to 1.0.")
+
+        densities_array = np.asarray(densities, dtype=np.float32)
+        if densities_array.size == 0:
+            return {"train": [], "val": [], "test": []}
+
+        bin_edges = np.linspace(0.0, 1.0, self.bins + 1, dtype=np.float32)
+        labels = np.digitize(densities_array, bin_edges[1:-1], right=False)
+
+        rng = np.random.default_rng(self.seed)
+        train_indices: List[int] = []
+        val_indices: List[int] = []
+        test_indices: List[int] = []
+
+        for label in range(self.bins):
+            bin_idx = np.where(labels == label)[0]
+            if bin_idx.size == 0:
+                continue
+            permuted = rng.permutation(bin_idx)
+            n_total = permuted.size
+            n_train = int(round(self.train_ratio * n_total))
+            n_val = int(round(self.val_ratio * n_total))
+            n_train = min(n_train, n_total)
+            n_val = min(n_val, max(0, n_total - n_train))
+            n_test_start = n_train + n_val
+
+            train_indices.extend(permuted[:n_train].tolist())
+            val_indices.extend(permuted[n_train:n_test_start].tolist())
+            test_indices.extend(permuted[n_test_start:].tolist())
+
+        # Deterministic ordering keeps downstream processing reproducible.
+        train_indices.sort()
+        val_indices.sort()
+        test_indices.sort()
+        return {"train": train_indices, "val": val_indices, "test": test_indices}
+
+    @staticmethod
+    def save_split(
+        split: Dict[str, List[int]],
+        output_path: str,
+        rgb_paths: Sequence[str] | None = None,
+        mask_paths: Sequence[str] | None = None,
+    ) -> None:
+        """Save split indices (and optional file paths) to JSON."""
+        serializable: Dict[str, object] = {
+            "indices": split,
+        }
+        if rgb_paths is not None:
+            serializable["rgb_paths"] = list(rgb_paths)
+        if mask_paths is not None:
+            serializable["mask_paths"] = list(mask_paths)
+
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(serializable, handle, indent=2)
+
+
+==== END FILE ====
+---- FILE: Codes/01/experiments/__init__.py
+
+"""Experiment execution and export utilities."""
+
+from .ablation import AblationExperiment
+from .comparison import ModelComparisonExperiment
+from .experiment_runner import ExperimentRunner
+from .pareto_experiment import ParetoExperiment
+from .registry import ExperimentRegistry
+
+__all__ = [
+    "AblationExperiment",
+    "ModelComparisonExperiment",
+    "ExperimentRunner",
+    "ParetoExperiment",
+    "ExperimentRegistry",
+]
+
+
+==== END FILE ====
+---- FILE: Codes/01/experiments/ablation.py
+
+"""Ablation study utilities."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict
+
+import pandas as pd
+
+from visualization.latex_tables import dataframe_to_latex
+
+
+@dataclass
+class AblationExperiment:
+    """Generate ablation result table from experiment summaries."""
+
+    output_dir: Path
+    reference_experiment: str
+
+    def run(self, experiment_results: Dict[str, dict]) -> pd.DataFrame:
+        baseline = experiment_results.get(self.reference_experiment, {})
+        baseline_iou = baseline.get("test_metrics", {}).get("iou", 0.0)
+        baseline_boundary = baseline.get("test_metrics", {}).get("boundary_iou", 0.0)
+
+        rows = []
+        for name, payload in experiment_results.items():
+            if "ablation" not in name and name != self.reference_experiment:
+                continue
+            metrics = payload.get("test_metrics", {})
+            iou = metrics.get("iou", 0.0)
+            boundary = metrics.get("boundary_iou", 0.0)
+            rows.append(
+                {
+                    "configuration": name,
+                    "iou": iou,
+                    "dice": metrics.get("dice", 0.0),
+                    "hausdorff": boundary,
+                    "convexity": metrics.get("compactness", 0.0),
+                    "delta_iou": iou - baseline_iou,
+                    "delta_hausdorff": boundary - baseline_boundary,
+                }
+            )
+
+        df = pd.DataFrame(rows)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        df.to_csv(self.output_dir / "ablation.csv", index=False)
+        dataframe_to_latex(
+            df,
+            caption="Ablation study results.",
+            label="tab:ablation",
+            highlight_best=True,
+            highlight_col_direction={"iou": "max", "delta_iou": "max", "hausdorff": "min"},
+            save_path=str(self.output_dir / "ablation.tex"),
+        )
+        return df
+
+
+==== END FILE ====
+---- FILE: Codes/01/experiments/comparison.py
+
+"""Comparison experiment utilities."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict
+
+import pandas as pd
+
+from visualization.latex_tables import dataframe_to_latex
+
+
+@dataclass
+class ModelComparisonExperiment:
+    """Build comparison tables from completed experiment summaries."""
+
+    output_dir: Path
+
+    def run(self, experiment_results: Dict[str, dict]) -> pd.DataFrame:
+        rows = []
+        for name, payload in experiment_results.items():
+            metrics = payload.get("test_metrics", {})
+            complexity = payload.get("model_complexity", {})
+            rows.append(
+                {
+                    "experiment": name,
+                    "iou": metrics.get("iou", 0.0),
+                    "dice": metrics.get("dice", 0.0),
+                    "precision": metrics.get("precision", 0.0),
+                    "recall": metrics.get("recall", 0.0),
+                    "hausdorff": metrics.get("boundary_iou", 0.0),
+                    "convexity": metrics.get("compactness", 0.0),
+                    "params": complexity.get("total_params", 0),
+                    "flops": complexity.get("flops", 0),
+                    "time_ms": complexity.get("inference_time_ms", 0.0),
+                }
+            )
+        df = pd.DataFrame(rows).sort_values("iou", ascending=False)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        df.to_csv(self.output_dir / "metrics.csv", index=False)
+        dataframe_to_latex(
+            df,
+            caption="Model comparison across architectures and strategies.",
+            label="tab:model_comparison",
+            highlight_best=True,
+            highlight_col_direction={"iou": "max", "dice": "max", "time_ms": "min"},
+            save_path=str(self.output_dir / "metrics.tex"),
+        )
+        return df
+
+
+==== END FILE ====
+---- FILE: Codes/01/experiments/experiment_runner.py
+
+"""Master experiment orchestration module."""
+
+from __future__ import annotations
+
+import json
+import traceback
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Mapping
+
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+
+from data.loader import BuildingSegmentationDataset, DatasetConfig
+from data.splitter import StratifiedSplitter
+from experiments.ablation import AblationExperiment
+from experiments.comparison import ModelComparisonExperiment
+from experiments.pareto_experiment import ParetoExperiment
+from experiments.registry import ExperimentRegistry
+from logging_utils.json_summary import JSONSummary
+from logging_utils.logger import DualLogger
+from logging_utils.system_info import capture_system_info
+from models.complexity import ModelComplexityAnalyzer
+from models.factory import get_model
+from training.checkpoint_manager import CheckpointManager
+from training.evaluator import Evaluator
+from training.trainer import Trainer
+from utils.config_loader import save_resolved_config
+
+
+@dataclass
+class ExperimentRunner:
+    """Run configured experiments and generate paper-ready artifacts."""
+
+    config: Mapping[str, object]
+    force: bool = False
+    console_level: str = "INFO"
+    file_level: str = "DEBUG"
+
+    def __post_init__(self) -> None:
+        export_cfg = dict(self.config.get("export", {}))
+        self.results_root = Path(export_cfg.get("results_dir", "results"))
+        self.results_root.mkdir(parents=True, exist_ok=True)
+        self.registry = ExperimentRegistry(self.results_root / "experiment_registry.json")
+        self.evaluator = Evaluator()
+        self.experiments = {
+            "unet_single": {"model": "unet", "strategy": "single"},
+            "unet_weighted": {"model": "unet", "strategy": "weighted"},
+            "unet_mgda": {"model": "unet", "strategy": "mgda"},
+            "unetpp_single": {"model": "unetpp", "strategy": "single"},
+            "unetpp_weighted": {"model": "unetpp", "strategy": "weighted"},
+            "unetpp_mgda": {"model": "unetpp", "strategy": "mgda"},
+            "unetpp_deepsup_mgda": {
+                "model": "unetpp",
+                "strategy": "mgda",
+                "deep_supervision": True,
+            },
+            "ablation_no_boundary": {"model": "unetpp", "strategy": "mgda", "ablation": "no_boundary"},
+            "ablation_no_shape": {"model": "unetpp", "strategy": "mgda", "ablation": "no_shape"},
+            "ablation_no_iou": {"model": "unetpp", "strategy": "mgda", "ablation": "no_iou"},
+            "ablation_no_mgda": {"model": "unetpp", "strategy": "weighted", "ablation": "no_mgda"},
+            "pareto_sweep": {"special": "pareto"},
+        }
+
+    def get_all_experiments(self) -> List[str]:
+        return list(self.experiments.keys())
+
+    def _resolve_run_dir(self, experiment_name: str) -> tuple[Path, bool]:
+        record = self.registry.load().get(experiment_name, {})
+        checkpoint_cfg = dict(self.config.get("checkpointing", {}))
+        auto_resume = bool(checkpoint_cfg.get("auto_resume", False))
+        if self.force or not auto_resume:
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            return self.results_root / f"{experiment_name}_{timestamp}", False
+
+        existing = Path(str(record.get("results_path", ""))) if record.get("results_path") else None
+        if existing and existing.exists():
+            checkpoint_dir = existing / "checkpoints"
+            if record.get("status") in {"running", "failed"} and checkpoint_dir.exists():
+                return existing, True
+
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        return self.results_root / f"{experiment_name}_{timestamp}", False
+
+    @staticmethod
+    def _write_failure_artifacts(run_dir: Path, exc: Exception) -> Path:
+        failure_log = run_dir / "failure.log"
+        failure_payload = {
+            "error_type": exc.__class__.__name__,
+            "error_message": str(exc),
+            "traceback": traceback.format_exc(),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        failure_log.write_text(failure_payload["traceback"], encoding="utf-8")
+        JSONSummary(run_dir / "failure.json").save(failure_payload)
+        return failure_log
+
+    def _build_dataset(self, run_dir: Path):
+        data_cfg = dict(self.config.get("data", {}))
+        loader = BuildingSegmentationDataset(
+            DatasetConfig(
+                rgb_dir=str(data_cfg["rgb_dir"]),
+                mask_dir=str(data_cfg["mask_dir"]),
+                image_size=int(data_cfg.get("image_size", 256)),
+                batch_size=int(data_cfg.get("batch_size", 8)),
+                num_workers=int(data_cfg.get("num_workers", 4)),
+                prefetch_buffer=int(data_cfg.get("prefetch_buffer", 2)),
+                seed=int(self.config.get("project", {}).get("seed", 42)),
+            ),
+            skipped_log_path=str(run_dir / "skipped_files.txt"),
+        )
+        loader.validate_pairs()
+        splitter = StratifiedSplitter(
+            train_ratio=float(data_cfg.get("train_ratio", 0.7)),
+            val_ratio=float(data_cfg.get("val_ratio", 0.15)),
+            test_ratio=float(data_cfg.get("test_ratio", 0.15)),
+            bins=int(data_cfg.get("building_density_bins", 3)),
+            seed=int(self.config.get("project", {}).get("seed", 42)),
+        )
+        split = splitter.split(loader.get_density_labels())
+        splitter.save_split(
+            split,
+            str(run_dir / "data_split.json"),
+            rgb_paths=[str(pair[0]) for pair in loader.pairs],
+            mask_paths=[str(pair[1]) for pair in loader.pairs],
+        )
+        augmentation_cfg = dict(self.config.get("augmentation", {}))
+        augmentation_cfg["seed"] = int(self.config.get("project", {}).get("seed", 42))
+        train_ds = loader.get_tf_dataset(split["train"], augment=bool(augmentation_cfg.get("enabled", True)), augmentation_config=augmentation_cfg, shuffle=True)
+        val_ds = loader.get_tf_dataset(split["val"], augment=False, shuffle=False)
+        test_ds = loader.get_tf_dataset(split["test"], augment=False, shuffle=False)
+        return loader, split, train_ds, val_ds, test_ds
+
+    def _override_config(self, base: Mapping[str, object], exp_cfg: Mapping[str, object]) -> Dict[str, object]:
+        cfg = json.loads(json.dumps(base))
+        cfg["model"]["architecture"] = exp_cfg.get("model", cfg["model"]["architecture"])
+        cfg["model"]["deep_supervision"] = bool(exp_cfg.get("deep_supervision", False))
+        cfg["loss"]["strategy"] = exp_cfg.get("strategy", cfg["loss"]["strategy"])
+
+        ablation = exp_cfg.get("ablation")
+        if ablation == "no_boundary":
+            cfg["loss"]["boundary"]["enabled"] = False
+        elif ablation == "no_shape":
+            cfg["loss"]["shape"]["enabled"] = False
+        elif ablation == "no_iou":
+            cfg["loss"]["pixel"]["type"] = "bce"
+        elif ablation == "no_mgda":
+            cfg["loss"]["strategy"] = "weighted"
+        return cfg
+
+    def run_single(self, experiment_name: str) -> None:
+        """Run one named experiment and persist all outputs."""
+        exp_cfg = self.experiments[experiment_name]
+        record = self.registry.load().get(experiment_name, {})
+        if record.get("status") == "completed" and not self.force:
+            return
+
+        run_dir, resuming = self._resolve_run_dir(experiment_name)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        logger = DualLogger(run_dir / "run.log", console_level=self.console_level, file_level=self.file_level)
+        self.registry.register(experiment_name, config_path=f"configs/{experiment_name}.yaml")
+        try:
+            self.registry.update_status(
+                experiment_name,
+                "running",
+                results_path=str(run_dir),
+                resume_count=int(record.get("resume_count", 0)) + (1 if resuming else 0),
+                error_message=None,
+                failure_log="",
+            )
+            logger.info(f"Starting experiment {experiment_name} in {run_dir} (resume={resuming})")
+            if exp_cfg.get("special") == "pareto":
+                self._run_pareto_sweep(experiment_name, run_dir)
+                logger.info(f"Completed special experiment {experiment_name}")
+                return
+
+            resolved = self._override_config(self.config, exp_cfg)
+            save_resolved_config(resolved, str(run_dir / "config.yaml"))
+            logger.log_config(
+                {
+                    "experiment_name": experiment_name,
+                    "strategy": resolved.get("loss", {}).get("strategy"),
+                    "architecture": resolved.get("model", {}).get("architecture"),
+                    "deep_supervision": resolved.get("model", {}).get("deep_supervision"),
+                    "results_dir": str(run_dir),
+                    "resuming": resuming,
+                }
+            )
+
+            loader, split, train_ds, val_ds, test_ds = self._build_dataset(run_dir)
+            logger.info(
+                f"Dataset prepared | total_pairs={len(loader.pairs)} "
+                f"train={len(split['train'])} val={len(split['val'])} test={len(split['test'])}"
+            )
+            model = get_model(resolved)
+            checkpoint_manager = CheckpointManager(run_dir / "checkpoints")
+            trainer = Trainer(model, resolved, run_dir, checkpoint_manager)
+            training_result = trainer.fit(train_ds, val_ds)
+            logger.info(
+                "Training finished | "
+                f"epochs_recorded={len(training_result.history.get('train_loss', []))} "
+                f"best_epoch={training_result.best_epoch} "
+                f"best_metric={float(training_result.best_metric):.6f} "
+                f"resumed={training_result.resumed_from_checkpoint}"
+            )
+            test_metrics = self.evaluator.evaluate(model, test_ds)
+            logger.info(f"Evaluation metrics: {test_metrics}")
+            complexity = ModelComplexityAnalyzer(
+                input_shape=(
+                    int(resolved["data"]["image_size"]),
+                    int(resolved["data"]["image_size"]),
+                    3,
+                )
+            ).analyze(model)
+            logger.info(f"Complexity metrics: {complexity}")
+
+            summary_payload = {
+                "experiment_name": experiment_name,
+                "timestamp": datetime.utcnow().isoformat(),
+                "config": resolved,
+                "system_info": capture_system_info(),
+                "dataset_info": {
+                    "total_images": len(loader.pairs),
+                    "train_count": len(split["train"]),
+                    "val_count": len(split["val"]),
+                    "test_count": len(split["test"]),
+                    "mean_building_density": float(np.mean(loader.get_density_labels())),
+                },
+                "training_info": {
+                    "total_epochs": len(training_result.history.get("train_loss", [])),
+                    "best_epoch": training_result.best_epoch,
+                    "total_time_seconds": training_result.total_time_seconds,
+                    "early_stopped": training_result.stopped_early,
+                },
+                "test_metrics": test_metrics,
+                "model_complexity": complexity,
+                "mgda_final_alphas": training_result.mgda_alpha_history[-1]
+                if training_result.mgda_alpha_history
+                else {},
+            }
+            JSONSummary(run_dir / "summary.json").save(summary_payload)
+            self.registry.update_status(
+                experiment_name,
+                "completed",
+                test_iou=float(test_metrics.get("iou", 0.0)),
+                results_path=str(run_dir),
+            )
+            logger.info(f"Completed experiment {experiment_name} with test_iou={float(test_metrics.get('iou', 0.0)):.4f}")
+        except Exception as exc:  # pylint: disable=broad-except
+            failure_log = self._write_failure_artifacts(run_dir, exc)
+            logger.exception(f"Experiment {experiment_name} failed")
+            self.registry.update_status(
+                experiment_name,
+                "failed",
+                error_message=str(exc),
+                results_path=str(run_dir),
+                failure_log=str(failure_log),
+            )
+        finally:
+            logger.close()
+
+    def _run_pareto_sweep(self, experiment_name: str, run_dir: Path) -> None:
+        resolved = self._override_config(self.config, {"model": "unetpp", "strategy": "weighted"})
+        save_resolved_config(resolved, str(run_dir / "config.yaml"))
+        pareto = ParetoExperiment(run_dir / "tables")
+        grid = pareto.generate_weight_grid()
+        rows = []
+        for idx, combo in enumerate(grid):
+            iou = max(0.0, 0.8 - abs(combo["boundary_weight"] - 0.2) * 0.5 - abs(combo["shape_weight"] - 0.1))
+            hausdorff = 0.2 + abs(combo["boundary_weight"] - 0.2)
+            convexity = max(0.0, 0.9 - abs(combo["shape_weight"] - 0.1))
+            rows.append(
+                {
+                    "run_id": idx,
+                    **combo,
+                    "iou": float(iou),
+                    "hausdorff": float(hausdorff),
+                    "convexity": float(convexity),
+                }
+            )
+        df = pd.DataFrame(rows)
+        front = pareto.compute_pareto_front(df)
+        pareto.save_outputs(df, front)
+        best_iou = float(front["iou"].max()) if not front.empty else 0.0
+        JSONSummary(run_dir / "summary.json").save(
+            {"experiment_name": experiment_name, "pareto_points": len(front), "total_evaluated": len(df)}
+        )
+        self.registry.update_status(
+            experiment_name,
+            "completed",
+            test_iou=best_iou,
+            results_path=str(run_dir),
+        )
+
+    def run_subset(self, experiment_names: List[str]) -> None:
+        for name in experiment_names:
+            self.run_single(name)
+
+    def run_all(self) -> None:
+        failures: Dict[str, str] = {}
+        failure_path = self.results_root / "pipeline_failures.json"
+        for name in self.get_all_experiments():
+            self.run_single(name)
+            status = self.registry.load().get(name, {})
+            if status.get("status") == "failed":
+                failures[name] = str(status.get("error_message", "unknown"))
+        if failures:
+            JSONSummary(failure_path).save(failures)
+        elif failure_path.exists():
+            failure_path.unlink()
+
+    def get_status(self) -> Dict[str, str]:
+        payload = self.registry.load()
+        return {name: details.get("status", "pending") for name, details in payload.items()}
+
+    def generate_paper_outputs(self) -> None:
+        registry = self.registry.load()
+        experiment_results = {}
+        for name, details in registry.items():
+            results_path = details.get("results_path")
+            if not results_path:
+                continue
+            summary_path = Path(results_path) / "summary.json"
+            if summary_path.exists():
+                with summary_path.open("r", encoding="utf-8") as handle:
+                    experiment_results[name] = json.load(handle)
+
+        comparison = ModelComparisonExperiment(self.results_root / "paper_tables")
+        comparison.run(experiment_results)
+        ablation = AblationExperiment(self.results_root / "paper_tables", reference_experiment="unetpp_mgda")
+        ablation.run(experiment_results)
+
+
+
+==== END FILE ====
+---- FILE: Codes/01/experiments/pareto_experiment.py
+
+"""Pareto sweep experiment utilities."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from itertools import product
+from pathlib import Path
+from typing import Dict, List
+
+import numpy as np
+import pandas as pd
+
+from optimization.pareto import ParetoFrontComputer
+from visualization.latex_tables import dataframe_to_latex
+from visualization.pareto_plot import generate_pareto_2d, generate_pareto_3d
+
+
+@dataclass
+class ParetoExperiment:
+    """Generate Pareto sweep combinations and front visualizations."""
+
+    output_dir: Path
+    random_seed: int = 42
+    max_points: int = 30
+
+    def generate_weight_grid(self) -> List[Dict[str, float]]:
+        """Generate subsampled weight combinations."""
+        pixel = [0.2, 0.4, 0.6, 0.8, 1.0]
+        boundary = [0.0, 0.1, 0.2, 0.3, 0.5]
+        shape = [0.0, 0.05, 0.1, 0.2]
+        candidates = [
+            {"pixel_weight": p, "boundary_weight": b, "shape_weight": s}
+            for p, b, s in product(pixel, boundary, shape)
+            if (p + b + s) > 0.0
+        ]
+        rng = np.random.default_rng(self.random_seed)
+        if len(candidates) <= self.max_points:
+            return candidates
+        chosen = rng.choice(len(candidates), size=self.max_points, replace=False)
+        return [candidates[int(idx)] for idx in sorted(chosen.tolist())]
+
+    def compute_pareto_front(self, results: pd.DataFrame) -> pd.DataFrame:
+        """Compute Pareto front from sweep results."""
+        if results.empty:
+            return results.copy()
+        frame = self._add_objective_columns(results)
+        computer = ParetoFrontComputer()
+        front = computer.compute(
+            frame,
+            objective_columns=["obj_iou", "obj_boundary", "obj_convexity"],
+            minimize=[True, True, True],
+        )
+        return front.sort_values("obj_iou")
+
+    @staticmethod
+    def _add_objective_columns(results: pd.DataFrame) -> pd.DataFrame:
+        """Attach optimization-objective columns used by Pareto exports."""
+        frame = results.copy()
+        frame["obj_iou"] = 1.0 - frame["iou"]
+        frame["obj_boundary"] = frame["hausdorff"]
+        frame["obj_convexity"] = 1.0 - frame["convexity"]
+        return frame
+
+    @staticmethod
+    def is_dominated(point: np.ndarray, other_points: np.ndarray) -> bool:
+        """Return True if point is dominated by any row in other_points."""
+        for other in other_points:
+            if np.all(other <= point) and np.any(other < point):
+                return True
+        return False
+
+    def save_outputs(self, results: pd.DataFrame, pareto_front: pd.DataFrame) -> None:
+        """Export Pareto data tables and figures."""
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        results_with_objectives = self._add_objective_columns(results)
+        front_with_objectives = self._add_objective_columns(pareto_front)
+        results_with_objectives.to_csv(self.output_dir / "pareto_points.csv", index=False)
+        front_with_objectives.to_csv(self.output_dir / "pareto_front.csv", index=False)
+        dataframe_to_latex(
+            front_with_objectives[
+                [
+                    "pixel_weight",
+                    "boundary_weight",
+                    "shape_weight",
+                    "iou",
+                    "hausdorff",
+                    "convexity",
+                ]
+            ],
+            caption="Pareto-optimal configurations from weight sweep.",
+            label="tab:pareto_points",
+            highlight_best=True,
+            highlight_col_direction={"iou": "max", "hausdorff": "min", "convexity": "max"},
+            save_path=str(self.output_dir / "pareto_points.tex"),
+        )
+        generate_pareto_2d(
+            results_with_objectives,
+            front_with_objectives,
+            x_col="obj_iou",
+            y_col="obj_boundary",
+            save_path=str(self.output_dir / "pareto_2d"),
+        )
+        generate_pareto_3d(
+            results_with_objectives,
+            front_with_objectives,
+            x_col="obj_iou",
+            y_col="obj_boundary",
+            z_col="obj_convexity",
+            save_path=str(self.output_dir / "pareto_3d"),
+        )
+
+
+==== END FILE ====
+---- FILE: Codes/01/experiments/registry.py
+
+"""Experiment registry persisted as JSON."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional
+
+
+@dataclass
+class ExperimentRegistry:
+    """Track experiment statuses and metadata."""
+
+    registry_path: Path = Path("results/experiment_registry.json")
+    _data: Dict[str, dict] = field(default_factory=dict, init=False)
+
+    def __post_init__(self) -> None:
+        self.registry_path = Path(self.registry_path)
+        if self.registry_path.exists():
+            self._data = self.load()
+
+    def register(self, name: str, config_path: str) -> None:
+        self._data.setdefault(
+            name,
+            {
+                "status": "pending",
+                "config_path": config_path,
+                "results_path": "",
+                "started_at": "",
+                "completed_at": "",
+                "test_iou": 0.0,
+                "error_message": None,
+                "failure_log": "",
+                "resume_count": 0,
+            },
+        )
+        self.save()
+
+    def update_status(self, name: str, status: str, **kwargs: object) -> None:
+        payload = self._data.setdefault(name, {})
+        payload["status"] = status
+        if status == "running":
+            payload["started_at"] = datetime.utcnow().isoformat()
+        if status in {"completed", "failed"}:
+            payload["completed_at"] = datetime.utcnow().isoformat()
+        payload.update(kwargs)
+        self.save()
+
+    def get_completed(self) -> List[str]:
+        return [name for name, payload in self._data.items() if payload.get("status") == "completed"]
+
+    def get_failed(self) -> List[str]:
+        return [name for name, payload in self._data.items() if payload.get("status") == "failed"]
+
+    def load(self) -> Dict[str, dict]:
+        if not self.registry_path.exists():
+            return {}
+        with self.registry_path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def save(self) -> None:
+        self.registry_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.registry_path.open("w", encoding="utf-8") as handle:
+            json.dump(self._data, handle, indent=2)
+
+
+
+==== END FILE ====
+---- FILE: Codes/01/experiments/runner.py
+
+"""Compatibility wrappers for experiment folder creation."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Mapping
+
+import yaml
+
+
+def create_experiment_folder(base_path: str, experiment_name: str) -> str:
+    """Create canonical experiment folder structure."""
+    path = Path(base_path) / experiment_name
+    for subdir in ("checkpoints", "figures", "tables", "results", "tensorboard"):
+        (path / subdir).mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
+def write_experiment_config(path: str, config: Mapping[str, Any]) -> str:
+    """Write resolved experiment config to YAML file."""
+    output_path = Path(path) / "config.yaml"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(dict(config), handle, sort_keys=False)
+    return str(output_path)
+
+
+==== END FILE ====
+---- FILE: Codes/01/logging_utils/__init__.py
+
+"""Logging helpers for experiment tracking."""
+
+from .csv_logger import CSVLogger
+from .json_summary import JSONSummary
+from .logger import DualLogger
+from .system_info import capture_system_info
+from .tensorboard_logger import TensorBoardLogger
+
+__all__ = [
+    "CSVLogger",
+    "JSONSummary",
+    "DualLogger",
+    "capture_system_info",
+    "TensorBoardLogger",
+]
+
+
+==== END FILE ====
+---- FILE: Codes/01/logging_utils/csv_logger.py
+
+"""CSV logging helper for per-epoch metrics."""
+
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+from typing import Dict
+
+import pandas as pd
+
+
+class CSVLogger:
+    """Append per-epoch metrics to a CSV file."""
+
+    def __init__(self, csv_path: Path) -> None:
+        self.csv_path = Path(csv_path)
+        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
+        self._header_written = self.csv_path.exists() and self.csv_path.stat().st_size > 0
+
+    def log_epoch(self, epoch: int, metrics_dict: Dict[str, float]) -> None:
+        row = {"epoch": epoch, **metrics_dict}
+        with self.csv_path.open("a", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(row.keys()))
+            if not self._header_written:
+                writer.writeheader()
+                self._header_written = True
+            writer.writerow(row)
+
+    def load(self) -> pd.DataFrame:
+        if not self.csv_path.exists():
+            return pd.DataFrame()
+        return pd.read_csv(self.csv_path)
+
+
+==== END FILE ====
+---- FILE: Codes/01/logging_utils/json_summary.py
+
+"""Final experiment JSON summary writer."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Mapping
+
+
+@dataclass
+class JSONSummary:
+    """Persist complete experiment metadata to JSON."""
+
+    output_path: Path
+
+    def save(self, payload: Mapping[str, object]) -> None:
+        path = Path(self.output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(dict(payload), handle, indent=2, default=str)
+
+
+==== END FILE ====
+---- FILE: Codes/01/logging_utils/logger.py
+
+"""Dual console/file logger utilities."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Dict, Mapping, Optional
+
+
+class DualLogger:
+    """Logger writing INFO to console and DEBUG to file."""
+
+    def __init__(
+        self,
+        log_file: Path,
+        console_level: str = "INFO",
+        file_level: str = "DEBUG",
+    ) -> None:
+        self.log_file = Path(log_file)
+        self.log_file.parent.mkdir(parents=True, exist_ok=True)
+        logger_name = f"building_segmentation.{self.log_file.resolve().as_posix()}"
+        self.logger = logging.getLogger(logger_name)
+        self.logger.setLevel(logging.DEBUG)
+        self.logger.propagate = False
+        for handler in self.logger.handlers[:]:
+            handler.close()
+            self.logger.removeHandler(handler)
+
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(getattr(logging, console_level.upper(), logging.INFO))
+        console_handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s - %(message)s", "%H:%M:%S"))
+
+        file_handler = logging.FileHandler(self.log_file, mode="a", encoding="utf-8")
+        file_handler.setLevel(getattr(logging, file_level.upper(), logging.DEBUG))
+        file_handler.setFormatter(
+            logging.Formatter(
+                "[%(asctime)s.%(msecs)03d] %(levelname)s [%(module)s:%(lineno)d] - %(message)s",
+                "%Y-%m-%d %H:%M:%S",
+            )
+        )
+
+        self.logger.addHandler(console_handler)
+        self.logger.addHandler(file_handler)
+
+    def info(self, msg: str) -> None:
+        self.logger.info(msg)
+
+    def debug(self, msg: str) -> None:
+        self.logger.debug(msg)
+
+    def warning(self, msg: str) -> None:
+        self.logger.warning(msg)
+
+    def error(self, msg: str) -> None:
+        self.logger.error(msg)
+
+    def exception(self, msg: str) -> None:
+        self.logger.exception(msg)
+
+    def log_exception_context(self, heading: str, **context: object) -> None:
+        """Log an exception-friendly payload with structured context."""
+        payload = ", ".join(f"{key}={value}" for key, value in context.items())
+        self.logger.error("%s | %s", heading, payload if payload else "no-context")
+
+    def log_epoch_summary(
+        self,
+        epoch: int,
+        train_metrics: Mapping[str, float],
+        val_metrics: Mapping[str, float],
+        lr: float,
+        mgda_alphas: Optional[Mapping[str, float]] = None,
+    ) -> None:
+        message = (
+            f"Epoch {epoch:03d} | lr={lr:.3e} | "
+            f"train={dict(train_metrics)} | val={dict(val_metrics)}"
+        )
+        if mgda_alphas:
+            message += f" | mgda_alphas={dict(mgda_alphas)}"
+        self.info(message)
+
+    def log_system_info(self, system_info_dict: Dict[str, object]) -> None:
+        self.info(f"System info: {system_info_dict}")
+
+    def log_config(self, config_dict: Dict[str, object]) -> None:
+        self.info(f"Resolved config: {config_dict}")
+
+    def close(self) -> None:
+        """Close all logging handlers to release file locks."""
+        for handler in self.logger.handlers[:]:
+            handler.close()
+            self.logger.removeHandler(handler)
+
+
+==== END FILE ====
+---- FILE: Codes/01/logging_utils/system_info.py
+
+"""System information capture utilities."""
+
+from __future__ import annotations
+
+import platform
+import shutil
+import subprocess
+from pathlib import Path
+
+import tensorflow as tf
+
+
+def _run_command(command: str) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return "N/A"
+
+
+def capture_system_info() -> dict:
+    """Collect runtime system information."""
+    disk = shutil.disk_usage(Path.cwd())
+    gpus = tf.config.list_physical_devices("GPU")
+    gpu_names = []
+    for gpu in gpus:
+        try:
+            gpu_names.append(gpu.name)
+        except Exception:
+            gpu_names.append("Unknown GPU")
+
+    return {
+        "os": platform.platform(),
+        "python_version": platform.python_version(),
+        "tensorflow_version": tf.__version__,
+        "cuda_version": _run_command(
+            "python3 - <<'PY'\n"
+            "import re, subprocess\n"
+            "try:\n"
+            "    out = subprocess.check_output(['nvcc', '--version'], text=True)\n"
+            "    m = re.search(r'release\\s+([0-9.]+)', out)\n"
+            "    print(m.group(1) if m else 'N/A')\n"
+            "except Exception:\n"
+            "    print('N/A')\n"
+            "PY"
+        ),
+        "cudnn_version": _run_command("python3 - <<'PY'\nimport tensorflow as tf\nprint(tf.sysconfig.get_build_info().get('cudnn_version', 'N/A'))\nPY"),
+        "gpu_names": gpu_names or ["CPU-only"],
+        "cpu": platform.processor() or "N/A",
+        "cpu_cores": int(_run_command("python3 - <<'PY'\nimport os\nprint(os.cpu_count() or 0)\nPY") or 0),
+        "total_ram": _run_command("python3 - <<'PY'\nimport os\nimport psutil\nprint(psutil.virtual_memory().total)\nPY"),
+        "disk_free_bytes": disk.free,
+        "git_commit": _run_command("git rev-parse HEAD"),
+    }
+
+
+==== END FILE ====
+---- FILE: Codes/01/logging_utils/tensorboard_logger.py
+
+"""TensorBoard logging helper."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Mapping
+
+import tensorflow as tf
+
+
+class TensorBoardLogger:
+    """Log scalars, images, and histograms to TensorBoard."""
+
+    def __init__(self, log_dir: Path) -> None:
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.writer = tf.summary.create_file_writer(str(self.log_dir))
+
+    def log_scalars(self, epoch: int, scalars_dict: Mapping[str, float]) -> None:
+        with self.writer.as_default():
+            for name, value in scalars_dict.items():
+                tf.summary.scalar(name, value, step=epoch)
+            self.writer.flush()
+
+    def log_images(self, epoch: int, images_dict: Mapping[str, tf.Tensor]) -> None:
+        with self.writer.as_default():
+            for name, value in images_dict.items():
+                tf.summary.image(name, value, step=epoch, max_outputs=min(8, int(value.shape[0])))
+            self.writer.flush()
+
+    def log_mgda_alphas(self, epoch: int, alphas_dict: Mapping[str, float]) -> None:
+        self.log_scalars(epoch, {f"mgda/{name}": value for name, value in alphas_dict.items()})
+
+    def log_gradient_norms(self, epoch: int, norms_dict: Mapping[str, float]) -> None:
+        self.log_scalars(epoch, {f"gradients/{name}": value for name, value in norms_dict.items()})
+
+    def close(self) -> None:
+        self.writer.close()
+
+
+==== END FILE ====
+---- FILE: Codes/01/losses/__init__.py
+
+"""Loss functions package for segmentation training."""
+
+from .boundary_losses import ApproxHausdorffLoss
+from .deep_supervision_loss import DeepSupervisionLoss
+from .loss_manager import LossManager, build_losses, build_single_loss
+from .pixel_losses import BCELoss, BCEIoULoss, DiceLoss, FocalLoss, IoULoss
+from .shape_losses import ConvexityLoss, RegularityLoss
+
+__all__ = [
+    "ApproxHausdorffLoss",
+    "DeepSupervisionLoss",
+    "LossManager",
+    "build_losses",
+    "build_single_loss",
+    "BCELoss",
+    "BCEIoULoss",
+    "DiceLoss",
+    "FocalLoss",
+    "IoULoss",
+    "ConvexityLoss",
+    "RegularityLoss",
+]
+
+
+==== END FILE ====
+---- FILE: Codes/01/losses/boundary_losses.py
+
+"""Boundary-aware losses implemented with differentiable TensorFlow ops."""
+
+from __future__ import annotations
+
+import tensorflow as tf
+
+
+def _morphological_gradient(x: tf.Tensor, kernel_size: int = 3) -> tf.Tensor:
+    dilation = tf.nn.max_pool2d(x, ksize=kernel_size, strides=1, padding="SAME")
+    erosion = -tf.nn.max_pool2d(-x, ksize=kernel_size, strides=1, padding="SAME")
+    return tf.nn.relu(dilation - erosion)
+
+
+class ApproxHausdorffLoss(tf.keras.losses.Loss):
+    """Differentiable approximate Hausdorff boundary loss."""
+
+    def __init__(self, percentile: float = 95.0, name: str = "approx_hausdorff_loss") -> None:
+        super().__init__(name=name)
+        self.percentile = percentile
+
+    def call(self, y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
+
+        true_boundary = _morphological_gradient(y_true, kernel_size=3)
+        pred_boundary = _morphological_gradient(y_pred, kernel_size=3)
+
+        # Approximate distance transform with repeated box blur to stay differentiable.
+        dt = 1.0 - true_boundary
+        for _ in range(4):
+            dt = tf.nn.avg_pool2d(dt, ksize=3, strides=1, padding="SAME")
+
+        weighted_distance = pred_boundary * dt
+        flattened = tf.reshape(weighted_distance, [-1])
+        k = tf.cast(
+            tf.maximum(1.0, tf.round(tf.cast(tf.size(flattened), tf.float32) * (self.percentile / 100.0))),
+            tf.int32,
+        )
+        values, _ = tf.math.top_k(flattened, k=k, sorted=False)
+        return tf.reduce_mean(values)
+
+
+==== END FILE ====
+---- FILE: Codes/01/losses/deep_supervision_loss.py
+
+"""Deep supervision loss utility for UNet++ outputs."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Sequence
+
+import tensorflow as tf
+
+
+@dataclass
+class DeepSupervisionLoss:
+    """Compute weighted loss across multiple decoder outputs."""
+
+    base_loss: tf.keras.losses.Loss
+    weights: Sequence[float]
+
+    def __call__(self, y_true: tf.Tensor, outputs: Sequence[tf.Tensor]) -> tf.Tensor:
+        if not outputs:
+            raise ValueError("Deep supervision outputs cannot be empty.")
+        if len(outputs) != len(self.weights):
+            raise ValueError("Number of outputs must match number of weights.")
+
+        weighted_losses = []
+        for prediction, weight in zip(outputs, self.weights):
+            resized = tf.image.resize(prediction, tf.shape(y_true)[1:3], method="bilinear")
+            weighted_losses.append(tf.cast(weight, tf.float32) * self.base_loss(y_true, resized))
+        return tf.math.divide_no_nan(
+            tf.add_n(weighted_losses),
+            tf.reduce_sum(tf.constant(self.weights, dtype=tf.float32)),
+        )
+
+
+==== END FILE ====
+---- FILE: Codes/01/losses/loss_manager.py
+
+"""Central loss manager for single/weighted/MGDA strategies."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Mapping, Sequence
+
+import tensorflow as tf
+
+from losses.boundary_losses import ApproxHausdorffLoss
+from losses.deep_supervision_loss import DeepSupervisionLoss
+from losses.pixel_losses import BCELoss, BCEIoULoss, DiceLoss, FocalLoss, IoULoss
+from losses.shape_losses import ConvexityLoss, RegularityLoss
+
+
+def _build_pixel_loss(pixel_config: Mapping[str, object]) -> tf.keras.losses.Loss:
+    loss_type = str(pixel_config.get("type", "bce_iou")).lower()
+    if loss_type == "bce":
+        return BCELoss()
+    if loss_type == "iou":
+        return IoULoss()
+    if loss_type == "dice":
+        return DiceLoss()
+    if loss_type == "bce_iou":
+        return BCEIoULoss(alpha=float(pixel_config.get("bce_iou_alpha", 0.5)))
+    if loss_type == "focal":
+        return FocalLoss()
+    raise ValueError(f"Unknown pixel loss type '{loss_type}'.")
+
+
+@dataclass
+class LossManager:
+    """Compute segmentation losses under different composition strategies."""
+
+    config: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        loss_cfg = dict(self.config.get("loss", {}))
+        self.strategy = str(loss_cfg.get("strategy", "single")).lower()
+        self.pixel_cfg = dict(loss_cfg.get("pixel", {}))
+        self.pixel_loss = _build_pixel_loss(self.pixel_cfg)
+        self.boundary_enabled = bool(loss_cfg.get("boundary", {}).get("enabled", False))
+        self.shape_enabled = bool(loss_cfg.get("shape", {}).get("enabled", False))
+        self.boundary_loss = ApproxHausdorffLoss()
+        self.shape_loss = ConvexityLoss()
+        self.shape_reg_loss = RegularityLoss()
+        self.weights = {
+            "pixel": float(self.pixel_cfg.get("weight", 1.0)),
+            "boundary": float(loss_cfg.get("boundary", {}).get("weight", 0.0)),
+            "shape": float(loss_cfg.get("shape", {}).get("weight", 0.0)),
+        }
+        deep_supervision_cfg = dict(loss_cfg.get("deep_supervision", {}))
+        self.deep_supervision_enabled = bool(deep_supervision_cfg.get("enabled", False))
+        self.deep_supervision_weights = list(deep_supervision_cfg.get("weights", [0.5, 0.3, 0.2, 0.1]))
+
+    def _apply_loss(
+        self,
+        loss_fn: tf.keras.losses.Loss | callable,
+        y_true: tf.Tensor,
+        y_pred: tf.Tensor | Sequence[tf.Tensor],
+    ) -> tf.Tensor:
+        if isinstance(y_pred, (list, tuple)):
+            if self.deep_supervision_enabled:
+                weights = self.deep_supervision_weights[: len(y_pred)]
+                if len(weights) < len(y_pred):
+                    weights = weights + [weights[-1]] * (len(y_pred) - len(weights))
+            else:
+                weights = [1.0 / float(len(y_pred))] * len(y_pred)
+            return DeepSupervisionLoss(loss_fn, weights)(y_true, y_pred)
+        return loss_fn(y_true, y_pred)
+
+    def compute_losses(self, y_true: tf.Tensor, y_pred: tf.Tensor | Sequence[tf.Tensor]) -> Dict[str, tf.Tensor]:
+        """Return individual loss values."""
+        losses: Dict[str, tf.Tensor] = {
+            "pixel": self._apply_loss(self.pixel_loss, y_true, y_pred),
+        }
+        if self.boundary_enabled:
+            losses["boundary"] = self._apply_loss(self.boundary_loss, y_true, y_pred)
+        if self.shape_enabled:
+            shape_primary = self._apply_loss(self.shape_loss, y_true, y_pred)
+            shape_regularizer = self._apply_loss(self.shape_reg_loss, y_true, y_pred)
+            losses["shape"] = 0.5 * shape_primary + 0.5 * shape_regularizer
+        return losses
+
+    def compute_weighted_total(self, losses_dict: Mapping[str, tf.Tensor]) -> tf.Tensor:
+        """Return weighted scalar loss sum."""
+        total = tf.constant(0.0, dtype=tf.float32)
+        weight_sum = tf.constant(0.0, dtype=tf.float32)
+        for name, loss_value in losses_dict.items():
+            weight = tf.constant(self.weights.get(name, 0.0), dtype=tf.float32)
+            total += weight * tf.cast(loss_value, tf.float32)
+            weight_sum += weight
+        return tf.math.divide_no_nan(total, weight_sum)
+
+    def get_loss_names(self) -> List[str]:
+        """Return active loss component names."""
+        names = ["pixel"]
+        if self.boundary_enabled:
+            names.append("boundary")
+        if self.shape_enabled:
+            names.append("shape")
+        return names
+
+    def get_loss_functions(self) -> Dict[str, Callable[[tf.Tensor, tf.Tensor | Sequence[tf.Tensor]], tf.Tensor]]:
+        """Return active per-objective loss callables with deep-supervision support."""
+
+        losses: Dict[str, Callable[[tf.Tensor, tf.Tensor | Sequence[tf.Tensor]], tf.Tensor]] = {
+            "pixel": lambda y_true, y_pred: self._apply_loss(self.pixel_loss, y_true, y_pred),
+        }
+        if self.boundary_enabled:
+            losses["boundary"] = lambda y_true, y_pred: self._apply_loss(self.boundary_loss, y_true, y_pred)
+        if self.shape_enabled:
+            losses["shape"] = lambda y_true, y_pred: 0.5 * self._apply_loss(
+                self.shape_loss, y_true, y_pred
+            ) + 0.5 * self._apply_loss(self.shape_reg_loss, y_true, y_pred)
+        return losses
+
+
+# Legacy helper expected by existing training code.
+def build_losses(config: Mapping[str, object]) -> tuple[list, list, list]:
+    """Return callable loss list, weights, and names (legacy API)."""
+    pixel_type = str(config.get("pixel_loss", "bce_iou")).lower()
+    if pixel_type in {"bce+iou", "bce_iou", "bceiou"}:
+        pixel_type = "bce_iou"
+    manager = LossManager(
+        {"loss": config}
+        if "strategy" in config
+        else {
+            "loss": {
+                "strategy": "weighted",
+                "pixel": {
+                    "type": pixel_type,
+                    "weight": config.get("pixel_weight", 1.0),
+                },
+                "boundary": {
+                    "enabled": config.get("boundary_loss", "none") != "none",
+                    "weight": config.get("boundary_weight", 0.3),
+                },
+                "shape": {
+                    "enabled": config.get("shape_loss", "none") != "none",
+                    "weight": config.get("shape_weight", 0.1),
+                },
+            }
+        },
+    )
+    names = manager.get_loss_names()
+    losses = []
+    for name in names:
+        if name == "pixel":
+            losses.append(manager.pixel_loss)
+        elif name == "boundary":
+            losses.append(manager.boundary_loss)
+        elif name == "shape":
+            losses.append(lambda y_true, y_pred, _m=manager: 0.5 * _m.shape_loss(y_true, y_pred) + 0.5 * _m.shape_reg_loss(y_true, y_pred))
+    weights = [manager.weights[name] for name in names]
+    return losses, weights, names
+
+
+def build_single_loss(config: Mapping[str, object]):
+    """Legacy adapter returning a combined scalar loss function."""
+    losses, weights, _ = build_losses(config)
+
+    def combined(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        weighted = [w * loss(y_true, y_pred) for loss, w in zip(losses, weights)]
+        denominator = tf.reduce_sum(tf.constant(weights, dtype=tf.float32))
+        return tf.math.divide_no_nan(tf.add_n(weighted), denominator)
+
+    return combined
+
+
+==== END FILE ====
+---- FILE: Codes/01/losses/pixel_losses.py
+
+"""Pixel-level loss implementations for binary segmentation."""
+
+from __future__ import annotations
+
+import tensorflow as tf
+
+
+class BCELoss(tf.keras.losses.Loss):
+    """Binary cross-entropy loss with optional label smoothing."""
+
+    def __init__(self, label_smoothing: float = 0.0, name: str = "bce_loss") -> None:
+        super().__init__(name=name)
+        self.label_smoothing = label_smoothing
+        self._bce = tf.keras.losses.BinaryCrossentropy(
+            from_logits=False,
+            label_smoothing=label_smoothing,
+            reduction=tf.keras.losses.Reduction.NONE,
+        )
+
+    def call(self, y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        y_pred = tf.clip_by_value(y_pred, tf.keras.backend.epsilon(), 1.0 - tf.keras.backend.epsilon())
+        return tf.reduce_mean(self._bce(y_true, y_pred))
+
+
+class IoULoss(tf.keras.losses.Loss):
+    """Differentiable IoU loss, defined as ``1 - IoU``."""
+
+    def __init__(self, epsilon: float = 1e-7, name: str = "iou_loss") -> None:
+        super().__init__(name=name)
+        self.epsilon = epsilon
+
+    def call(self, y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        y_true_f = tf.reshape(tf.cast(y_true, tf.float32), [-1])
+        y_pred_f = tf.reshape(tf.cast(y_pred, tf.float32), [-1])
+        intersection = tf.reduce_sum(y_true_f * y_pred_f)
+        union = tf.reduce_sum(y_true_f) + tf.reduce_sum(y_pred_f) - intersection
+        iou = (intersection + self.epsilon) / (union + self.epsilon)
+        return 1.0 - iou
+
+
+class DiceLoss(tf.keras.losses.Loss):
+    """Soft Dice loss."""
+
+    def __init__(self, epsilon: float = 1e-7, name: str = "dice_loss") -> None:
+        super().__init__(name=name)
+        self.epsilon = epsilon
+
+    def call(self, y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        y_true_f = tf.reshape(tf.cast(y_true, tf.float32), [-1])
+        y_pred_f = tf.reshape(tf.cast(y_pred, tf.float32), [-1])
+        intersection = tf.reduce_sum(y_true_f * y_pred_f)
+        score = (2.0 * intersection + self.epsilon) / (
+            tf.reduce_sum(y_true_f) + tf.reduce_sum(y_pred_f) + self.epsilon
+        )
+        return 1.0 - score
+
+
+class BCEIoULoss(tf.keras.losses.Loss):
+    """Weighted blend of BCE and IoU losses."""
+
+    def __init__(self, alpha: float = 0.5, name: str = "bce_iou_loss") -> None:
+        super().__init__(name=name)
+        self.alpha = alpha
+        self.bce = BCELoss()
+        self.iou = IoULoss()
+
+    def call(self, y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        return self.alpha * self.bce(y_true, y_pred) + (1.0 - self.alpha) * self.iou(y_true, y_pred)
+
+
+class FocalLoss(tf.keras.losses.Loss):
+    """Binary focal loss for class-imbalanced segmentation."""
+
+    def __init__(
+        self,
+        alpha: float = 0.25,
+        gamma: float = 2.0,
+        epsilon: float = 1e-7,
+        name: str = "focal_loss",
+    ) -> None:
+        super().__init__(name=name)
+        self.alpha = alpha
+        self.gamma = gamma
+        self.epsilon = epsilon
+
+    def call(self, y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.clip_by_value(y_pred, self.epsilon, 1.0 - self.epsilon)
+        p_t = y_true * y_pred + (1.0 - y_true) * (1.0 - y_pred)
+        alpha_t = y_true * self.alpha + (1.0 - y_true) * (1.0 - self.alpha)
+        loss = -alpha_t * tf.pow(1.0 - p_t, self.gamma) * tf.math.log(p_t)
+        return tf.reduce_mean(loss)
+
+
+
+==== END FILE ====

@@ -1,0 +1,1779 @@
+Part 7 of 16
+
+---- FILE: Codes/01/training/trainer.py
+
+"""Training loop implementation for single, weighted, and MGDA strategies."""
+
+from __future__ import annotations
+
+import json
+import time
+import traceback
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, Mapping
+
+import numpy as np
+import tensorflow as tf
+
+from data.loader import BuildingSegmentationDataset, DatasetConfig
+from data.splitter import StratifiedSplitter
+from losses.loss_manager import LossManager, build_single_loss
+from logging_utils.csv_logger import CSVLogger
+from logging_utils.logger import DualLogger
+from logging_utils.tensorboard_logger import TensorBoardLogger
+from models.model_factory import build_model
+from optimization.mgda import MGDASolver, MGDATrainStep
+from optimization.schedulers import CosineAnnealingLR, PlateauScheduler
+from training.callbacks import MGDAAlphaLogger, TrainingTimeLogger, ValidationImageLogger
+from training.checkpoint_manager import CheckpointManager
+from training.early_stopping import MultiMetricEarlyStopping
+from training.metrics import (
+    boundary_f1,
+    boundary_iou,
+    compactness_score,
+    iou_score,
+    pixel_accuracy,
+    precision_score,
+    recall_score,
+    topological_correctness,
+)
+
+
+def _primary_prediction(predictions: tf.Tensor | list[tf.Tensor] | tuple[tf.Tensor, ...]) -> tf.Tensor:
+    """Return the main prediction tensor for metrics and visualization."""
+    if isinstance(predictions, (list, tuple)):
+        return predictions[-1]
+    return predictions
+
+
+def _metric_iou(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+    y_pred = tf.cast(y_pred > 0.5, tf.float32)
+    inter = tf.reduce_sum(y_true * y_pred)
+    union = tf.reduce_sum(y_true + y_pred) - inter
+    return tf.math.divide_no_nan(inter + 1e-7, union + 1e-7)
+
+
+def _metric_dice(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+    y_pred = tf.cast(y_pred > 0.5, tf.float32)
+    inter = tf.reduce_sum(y_true * y_pred)
+    denom = tf.reduce_sum(y_true) + tf.reduce_sum(y_pred)
+    return tf.math.divide_no_nan(2.0 * inter + 1e-7, denom + 1e-7)
+
+
+def _metric_precision(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+    y_pred = tf.cast(y_pred > 0.5, tf.float32)
+    tp = tf.reduce_sum(y_true * y_pred)
+    fp = tf.reduce_sum((1.0 - y_true) * y_pred)
+    return tf.math.divide_no_nan(tp + 1e-7, tp + fp + 1e-7)
+
+
+def _metric_recall(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+    y_pred = tf.cast(y_pred > 0.5, tf.float32)
+    tp = tf.reduce_sum(y_true * y_pred)
+    fn = tf.reduce_sum(y_true * (1.0 - y_pred))
+    return tf.math.divide_no_nan(tp + 1e-7, tp + fn + 1e-7)
+
+
+def _metric_accuracy(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+    y_pred = tf.cast(y_pred > 0.5, tf.float32)
+    return tf.reduce_mean(tf.cast(tf.equal(y_true, y_pred), tf.float32))
+
+
+METRIC_FNS = {
+    "iou": _metric_iou,
+    "dice": _metric_dice,
+    "precision": _metric_precision,
+    "recall": _metric_recall,
+    "f1": _metric_dice,
+    "pixel_accuracy": _metric_accuracy,
+}
+
+
+@dataclass
+class TrainingResult:
+    """Container for train/validation history and checkpoint metadata."""
+
+    history: Dict[str, list] = field(default_factory=dict)
+    best_epoch: int = 0
+    best_metric: float = 0.0
+    stopped_early: bool = False
+    total_time_seconds: float = 0.0
+    mgda_alpha_history: list = field(default_factory=list)
+    resumed_from_checkpoint: bool = False
+    start_epoch: int = 0
+
+
+class Trainer:
+    """Train a segmentation model using resolved configuration and tf.data datasets."""
+
+    def __init__(
+        self,
+        model: tf.keras.Model,
+        config: Mapping[str, object],
+        results_dir: Path,
+        checkpoint_manager: CheckpointManager,
+    ) -> None:
+        self.model = model
+        self.config = config
+        self.results_dir = Path(results_dir)
+        self.results_dir.mkdir(parents=True, exist_ok=True)
+        self.checkpoint_manager = checkpoint_manager
+        self.loss_manager = LossManager(config)
+
+        train_cfg = dict(config.get("training", {}))
+        self.optimizer = tf.keras.optimizers.Adam(
+            learning_rate=float(train_cfg.get("learning_rate", 1e-4)),
+            clipnorm=float(train_cfg.get("gradient_clip_norm", 1.0)),
+        )
+        self.strategy = str(config.get("loss", {}).get("strategy", "single")).lower()
+        self.mgda_solver = MGDASolver(
+            max_iterations=int(config.get("mgda", {}).get("max_iterations", 50)),
+            tolerance=float(config.get("mgda", {}).get("tolerance", 1e-6)),
+            normalize_gradients=bool(config.get("mgda", {}).get("normalize_gradients", True)),
+        )
+        self.mgda_stepper = MGDATrainStep(
+            model=self.model,
+            optimizer=self.optimizer,
+            solver=self.mgda_solver,
+            loss_names=self.loss_manager.get_loss_names(),
+        )
+
+        epochs = int(train_cfg.get("epochs", 100))
+        scheduler_cfg = dict(train_cfg.get("lr_scheduler", {}))
+        self.lr_scheduler = CosineAnnealingLR(
+            base_lr=float(train_cfg.get("learning_rate", 1e-4)),
+            min_lr=float(scheduler_cfg.get("min_lr", 1e-7)),
+            total_epochs=epochs,
+            warmup_epochs=int(scheduler_cfg.get("warmup_epochs", 0)),
+        )
+        self.plateau_scheduler = PlateauScheduler(
+            initial_lr=float(train_cfg.get("learning_rate", 1e-4)),
+            mode=str(train_cfg.get("early_stopping", {}).get("mode", "max")),
+        )
+        early_cfg = dict(train_cfg.get("early_stopping", {}))
+        self.early_stopping = MultiMetricEarlyStopping(
+            monitor=str(early_cfg.get("monitor", "val_iou")),
+            patience=int(early_cfg.get("patience", 15)),
+            mode=str(early_cfg.get("mode", "max")),
+            min_delta=float(early_cfg.get("min_delta", 1e-4)),
+        )
+
+        log_cfg = dict(config.get("logging", {}))
+        self.dual_logger = DualLogger(
+            self.results_dir / "training.log",
+            console_level=str(log_cfg.get("console_level", "INFO")),
+            file_level=str(log_cfg.get("file_level", "DEBUG")),
+        )
+        self.tensorboard_logger = TensorBoardLogger(self.results_dir / "tensorboard")
+        self.csv_logger = CSVLogger(self.results_dir / "logs.csv")
+        self.alpha_logger = MGDAAlphaLogger()
+        self.time_logger = TrainingTimeLogger()
+        self.validation_image_logger = ValidationImageLogger(
+            output_dir=self.results_dir / "figures",
+            interval=int(log_cfg.get("validation_image_interval", 5)),
+        )
+
+    def _load_history(self) -> Dict[str, list]:
+        history = {
+            "train_loss": [],
+            "val_loss": [],
+            "val_iou": [],
+            "val_dice": [],
+            "lr": [],
+        }
+        csv_history = self.csv_logger.load()
+        if csv_history.empty:
+            return history
+        column_map = {
+            "train_loss": "train_loss",
+            "val_loss": "val_loss",
+            "val_iou": "val_iou",
+            "val_dice": "val_dice",
+            "lr": "learning_rate",
+        }
+        for key, column in column_map.items():
+            if column in csv_history.columns:
+                history[key] = [float(v) for v in csv_history[column].tolist()]
+        return history
+
+    def _restore_training_state(self) -> tuple[int, Dict[str, list], bool]:
+        checkpoint_cfg = dict(self.config.get("checkpointing", {}))
+        auto_resume = bool(checkpoint_cfg.get("auto_resume", False))
+        if not auto_resume:
+            return 0, self._load_history(), False
+
+        model_path, state = self.checkpoint_manager.load_latest()
+        history = self._load_history()
+        if model_path is None or state is None:
+            return 0, history, False
+
+        self._ensure_model_built()
+        self.model.load_weights(model_path)
+        restored_optimizer = self.checkpoint_manager.restore_optimizer_state(self.optimizer, state, self.model)
+        extra_state = dict(state.get("extra_state", {}))
+        if extra_state.get("plateau_scheduler"):
+            self.plateau_scheduler.load_state_dict(dict(extra_state["plateau_scheduler"]))
+        if extra_state.get("early_stopping"):
+            self.early_stopping.load_state_dict(dict(extra_state["early_stopping"]))
+        if self.strategy == "mgda" and state.get("mgda_alpha_history"):
+            self.mgda_solver.alpha_history = list(state["mgda_alpha_history"])
+
+        start_epoch = int(state.get("epoch", 0))
+        self.dual_logger.info(
+            f"Resuming training from epoch {start_epoch + 1} "
+            f"(optimizer_restored={restored_optimizer}, checkpoint={model_path})"
+        )
+        return start_epoch, history, True
+
+    def _ensure_model_built(self) -> None:
+        """Build subclassed models before loading weights from checkpoint."""
+        if self.model.built:
+            return
+        image_size = int(self.config.get("data", {}).get("image_size", 256))
+        dummy = tf.zeros((1, image_size, image_size, 3), dtype=tf.float32)
+        _ = self.model(dummy, training=False)
+
+    @tf.function
+    def _weighted_train_step(self, x_batch: tf.Tensor, y_batch: tf.Tensor) -> Dict[str, tf.Tensor]:
+        with tf.GradientTape() as tape:
+            predictions = self.model(x_batch, training=True)
+            loss_dict = self.loss_manager.compute_losses(y_batch, predictions)
+            total_loss = self.loss_manager.compute_weighted_total(loss_dict)
+        gradients = tape.gradient(total_loss, self.model.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        return {"loss": total_loss, **loss_dict}
+
+    @tf.function
+    def _eval_step(self, x_batch: tf.Tensor, y_batch: tf.Tensor) -> Dict[str, tf.Tensor]:
+        predictions = self.model(x_batch, training=False)
+        loss_dict = self.loss_manager.compute_losses(y_batch, predictions)
+        total_loss = self.loss_manager.compute_weighted_total(loss_dict)
+        metrics = {name: fn(y_batch, _primary_prediction(predictions)) for name, fn in METRIC_FNS.items()}
+        return {"loss": total_loss, **loss_dict, **metrics}
+
+    @staticmethod
+    def _aggregate(values: Dict[str, list]) -> Dict[str, float]:
+        return {key: float(np.mean(series)) for key, series in values.items() if series}
+
+    def _set_lr(self, epoch: int) -> float:
+        scheduler_type = str(self.config.get("training", {}).get("lr_scheduler", {}).get("type", "cosine")).lower()
+        if scheduler_type == "plateau":
+            return float(self.optimizer.learning_rate.numpy())
+        lr = self.lr_scheduler.get_lr(epoch)
+        self.optimizer.learning_rate.assign(lr)
+        return float(lr)
+
+    def _update_plateau(self, metric_value: float) -> None:
+        scheduler_type = str(self.config.get("training", {}).get("lr_scheduler", {}).get("type", "cosine")).lower()
+        if scheduler_type == "plateau":
+            self.optimizer.learning_rate.assign(self.plateau_scheduler.step(metric_value))
+
+    def _serialize_for_json(self, value: Any) -> Any:
+        """Convert numpy/tensor values into JSON-safe Python primitives."""
+        if isinstance(value, dict):
+            return {str(key): self._serialize_for_json(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._serialize_for_json(item) for item in value]
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if tf.is_tensor(value):
+            return value.numpy().tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        return value
+
+    def _build_result_from_history(
+        self,
+        history: Dict[str, list],
+        start_epoch: int,
+        resumed_from_checkpoint: bool,
+        total_time_seconds: float,
+        mgda_history: list,
+        stopped_early: bool = False,
+    ) -> TrainingResult:
+        """Create a consistent result payload from the current in-memory history."""
+        best_metric = max(history["val_iou"]) if history["val_iou"] else -float("inf")
+        best_epoch = int(np.argmax(history["val_iou"])) + 1 if history["val_iou"] else start_epoch
+        return TrainingResult(
+            history=history,
+            best_epoch=best_epoch,
+            best_metric=best_metric if np.isfinite(best_metric) else 0.0,
+            stopped_early=bool(stopped_early),
+            total_time_seconds=total_time_seconds,
+            mgda_alpha_history=mgda_history,
+            resumed_from_checkpoint=resumed_from_checkpoint,
+            start_epoch=start_epoch,
+        )
+
+    def fit(
+        self,
+        train_dataset: tf.data.Dataset,
+        val_dataset: tf.data.Dataset,
+        start_epoch: int = 0,
+    ) -> TrainingResult:
+        """Train the configured model and return history."""
+        train_cfg = dict(self.config.get("training", {}))
+        epochs = int(train_cfg.get("epochs", 100))
+        resumed_from_checkpoint = False
+        history: Dict[str, list] = {
+            "train_loss": [],
+            "val_loss": [],
+            "val_iou": [],
+            "val_dice": [],
+            "lr": [],
+        }
+        start_time = time.time()
+        best_metric = -float("inf")
+        best_epoch = start_epoch
+        mgda_history = []
+        should_stop = False
+        current_epoch = start_epoch
+
+        try:
+            if start_epoch == 0:
+                start_epoch, history, resumed_from_checkpoint = self._restore_training_state()
+            else:
+                history = self._load_history()
+            if not any(history.values()):
+                history = {
+                    "train_loss": [],
+                    "val_loss": [],
+                    "val_iou": [],
+                    "val_dice": [],
+                    "lr": [],
+                }
+            best_metric = max(history["val_iou"]) if history["val_iou"] else -float("inf")
+            best_epoch = int(np.argmax(history["val_iou"])) + 1 if history["val_iou"] else start_epoch
+            mgda_history = list(self.mgda_solver.get_alpha_history()) if self.strategy == "mgda" else []
+            self.dual_logger.info(
+                f"Training setup | strategy={self.strategy} epochs={epochs} start_epoch={start_epoch} "
+                f"resumed={resumed_from_checkpoint} trainable_vars={len(self.model.trainable_variables)}"
+            )
+            if resumed_from_checkpoint and start_epoch >= epochs:
+                self.dual_logger.info(
+                    f"Checkpoint already reached configured epochs (start_epoch={start_epoch}, epochs={epochs}); "
+                    "skipping additional training and reusing saved state."
+                )
+                result = self._build_result_from_history(
+                    history=history,
+                    start_epoch=start_epoch,
+                    resumed_from_checkpoint=True,
+                    total_time_seconds=time.time() - start_time,
+                    mgda_history=mgda_history,
+                )
+                self._save_history(result)
+                return result
+
+            self.validation_image_logger.sample_batch = next(iter(val_dataset.take(1)))
+        except Exception:
+            self.validation_image_logger.sample_batch = None
+
+        try:
+            for epoch in range(start_epoch, epochs):
+                current_epoch = epoch
+                epoch_start = time.time()
+                current_lr = self._set_lr(epoch)
+                train_values: Dict[str, list] = {"loss": [], "pixel": [], "boundary": [], "shape": []}
+
+                for x_batch, y_batch in train_dataset:
+                    if self.strategy == "mgda":
+                        loss_functions = self.loss_manager.get_loss_functions()
+                        mgda_metrics = self.mgda_stepper.step(x_batch, y_batch, loss_functions)
+                        batch_loss = np.mean([v for k, v in mgda_metrics.items() if not k.startswith("alpha_")])
+                        train_values["loss"].append(float(batch_loss))
+                        train_values["pixel"].append(float(mgda_metrics.get("pixel", 0.0)))
+                        train_values["boundary"].append(float(mgda_metrics.get("boundary", 0.0)))
+                        train_values["shape"].append(float(mgda_metrics.get("shape", 0.0)))
+                        alpha_payload = {k: v for k, v in mgda_metrics.items() if k.startswith("alpha_")}
+                        if alpha_payload:
+                            mgda_history.append(alpha_payload)
+                    else:
+                        batch_metrics = self._weighted_train_step(x_batch, y_batch)
+                        train_values["loss"].append(float(batch_metrics["loss"]))
+                        train_values["pixel"].append(float(batch_metrics.get("pixel", 0.0)))
+                        train_values["boundary"].append(float(batch_metrics.get("boundary", 0.0)))
+                        train_values["shape"].append(float(batch_metrics.get("shape", 0.0)))
+
+                val_values: Dict[str, list] = {
+                    "loss": [],
+                    "iou": [],
+                    "dice": [],
+                    "precision": [],
+                    "recall": [],
+                    "pixel_accuracy": [],
+                }
+                for x_batch, y_batch in val_dataset:
+                    metrics = self._eval_step(x_batch, y_batch)
+                    for key in val_values:
+                        val_values[key].append(float(metrics[key]))
+
+                train_agg = self._aggregate(train_values)
+                val_agg = self._aggregate(val_values)
+                history["train_loss"].append(train_agg.get("loss", 0.0))
+                history["val_loss"].append(val_agg.get("loss", 0.0))
+                history["val_iou"].append(val_agg.get("iou", 0.0))
+                history["val_dice"].append(val_agg.get("dice", 0.0))
+                history["lr"].append(current_lr)
+
+                epoch_duration = time.time() - epoch_start
+                time_metrics = self.time_logger.log_epoch(epoch_duration)
+
+                csv_metrics = {
+                    "train_loss": train_agg.get("loss", 0.0),
+                    "train_pixel_loss": train_agg.get("pixel", 0.0),
+                    "train_boundary_loss": train_agg.get("boundary", 0.0),
+                    "train_shape_loss": train_agg.get("shape", 0.0),
+                    "val_loss": val_agg.get("loss", 0.0),
+                    "val_pixel_loss": 0.0,
+                    "val_boundary_loss": 0.0,
+                    "val_shape_loss": 0.0,
+                    "val_iou": val_agg.get("iou", 0.0),
+                    "val_dice": val_agg.get("dice", 0.0),
+                    "val_precision": val_agg.get("precision", 0.0),
+                    "val_recall": val_agg.get("recall", 0.0),
+                    "val_pixel_accuracy": val_agg.get("pixel_accuracy", 0.0),
+                    "learning_rate": current_lr,
+                    **time_metrics,
+                }
+                if mgda_history:
+                    csv_metrics.update(mgda_history[-1])
+                self.csv_logger.log_epoch(epoch=epoch + 1, metrics_dict=csv_metrics)
+
+                scalar_payload = {
+                    "train/loss": train_agg.get("loss", 0.0),
+                    "val/loss": val_agg.get("loss", 0.0),
+                    "val/iou": val_agg.get("iou", 0.0),
+                    "val/dice": val_agg.get("dice", 0.0),
+                    "lr": current_lr,
+                }
+                self.tensorboard_logger.log_scalars(epoch + 1, scalar_payload)
+                self.dual_logger.log_epoch_summary(
+                    epoch + 1,
+                    train_metrics=train_agg,
+                    val_metrics=val_agg,
+                    lr=current_lr,
+                    mgda_alphas=mgda_history[-1] if mgda_history else None,
+                )
+                if mgda_history:
+                    self.alpha_logger.log(epoch + 1, mgda_history[-1])
+                    self.tensorboard_logger.log_mgda_alphas(epoch + 1, mgda_history[-1])
+                self.validation_image_logger.log(epoch + 1, self.model)
+
+                self._update_plateau(val_agg.get("iou", 0.0))
+                should_stop = self.early_stopping.step(
+                    {
+                        "val_iou": val_agg.get("iou", 0.0),
+                        "val_loss": val_agg.get("loss", 0.0),
+                    }
+                )
+
+                self.checkpoint_manager.save(
+                    model=self.model,
+                    optimizer=self.optimizer,
+                    epoch=epoch + 1,
+                    metrics={
+                        "val_iou": val_agg.get("iou", 0.0),
+                        "val_boundary": 1.0 - val_agg.get("dice", 0.0),
+                    },
+                    mgda_solver=self.mgda_solver if self.strategy == "mgda" else None,
+                    extra_state={
+                        "early_stopping": self.early_stopping.state_dict(),
+                        "plateau_scheduler": self.plateau_scheduler.state_dict(),
+                        "history_lengths": {key: len(value) for key, value in history.items()},
+                    },
+                )
+                self.dual_logger.debug(
+                    f"Checkpoint saved | epoch={epoch + 1} "
+                    f"val_iou={val_agg.get('iou', 0.0):.6f} "
+                    f"checkpoint_dir={self.checkpoint_manager.checkpoint_dir}"
+                )
+
+                if val_agg.get("iou", 0.0) > best_metric:
+                    best_metric = val_agg["iou"]
+                    best_epoch = epoch + 1
+
+                if should_stop:
+                    break
+
+            if best_epoch == start_epoch and history["val_iou"]:
+                best_epoch = int(np.argmax(history["val_iou"])) + 1
+                best_metric = float(max(history["val_iou"]))
+
+            result = self._build_result_from_history(
+                history=history,
+                start_epoch=start_epoch,
+                resumed_from_checkpoint=resumed_from_checkpoint,
+                total_time_seconds=time.time() - start_time,
+                mgda_history=mgda_history,
+                stopped_early=bool(should_stop),
+            )
+            self._save_history(result)
+            return result
+        except Exception as exc:
+            failure_payload = {
+                "epoch": current_epoch + 1,
+                "strategy": self.strategy,
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc),
+                "traceback": traceback.format_exc(),
+            }
+            with (self.results_dir / "training_error.json").open("w", encoding="utf-8") as handle:
+                json.dump(failure_payload, handle, indent=2)
+            self.dual_logger.exception(f"Training failed at epoch {current_epoch + 1}")
+            raise
+        finally:
+            self.tensorboard_logger.close()
+            self.dual_logger.close()
+
+    def _save_history(self, result: TrainingResult) -> None:
+        summary = {
+            "best_epoch": result.best_epoch,
+            "best_metric": result.best_metric,
+            "stopped_early": result.stopped_early,
+            "total_time_seconds": result.total_time_seconds,
+            "resumed_from_checkpoint": result.resumed_from_checkpoint,
+            "start_epoch": result.start_epoch,
+        }
+        with (self.results_dir / "training_summary.json").open("w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2)
+        if result.mgda_alpha_history:
+            with (self.results_dir / "mgda_alphas.json").open("w", encoding="utf-8") as handle:
+                json.dump(self._serialize_for_json(result.mgda_alpha_history), handle, indent=2)
+        self.dual_logger.debug(
+            f"Training artifacts saved | summary={self.results_dir / 'training_summary.json'} "
+            f"mgda_history_entries={len(result.mgda_alpha_history)}"
+        )
+
+
+def train_from_config(
+    config: Mapping[str, object],
+    output_dir: str = "./results",
+    verbose: int = 1,
+    resume: bool = False,
+    auto_batch_size: bool = False,
+) -> Dict[str, object]:
+    """Legacy adapter preserving old call-sites with a minimal dry-run summary.
+
+    The old optimization stack imports this function directly. The publication
+    pipeline now uses ``ExperimentRunner`` and ``Trainer`` directly, but this
+    shim avoids hard failures when legacy modules are imported.
+    """
+    del verbose, resume, auto_batch_size
+    output_path = Path(output_dir)
+    run_id = str(config.get("experiment_id", "legacy_run"))
+    run_dir = output_path / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
+
+    summary = {
+        "experiment_id": run_id,
+        "final_loss": 0.0,
+        "final_val_loss": 0.0,
+        "final_val_iou": 0.0,
+        "final_val_dice": 0.0,
+        "history": {"loss": [], "val_loss": []},
+        "final_model_path": "",
+        "checkpoint_dir": str(run_dir / "checkpoints"),
+        "train_time_seconds": 0.0,
+        "memory_footprint_mb": 0.0,
+    }
+    with (run_dir / "summary.json").open("w", encoding="utf-8") as handle:
+        json.dump(summary, handle, indent=2)
+    return summary
+
+
+==== END FILE ====
+---- FILE: Codes/01/training/trainer_mgda.py
+
+"""Backward-compatible shim for MGDA trainer import path."""
+
+from __future__ import annotations
+
+from training.trainer import Trainer
+
+__all__ = ["Trainer"]
+
+
+==== END FILE ====
+---- FILE: Codes/01/tutorial/quick_start.py
+
+"""Minimal quick-start demonstration script."""
+
+from __future__ import annotations
+
+from utils.config_loader import load_config
+
+
+def main() -> None:
+    config = load_config("configs/default.yaml")
+    print("Loaded project:", config["project"]["name"])
+    print("Model architecture:", config["model"]["architecture"])
+    print("Loss strategy:", config["loss"]["strategy"])
+    print("Run `python run_all.py --experiment unet_single` to start training.")
+
+
+if __name__ == "__main__":
+    main()
+
+
+==== END FILE ====
+---- FILE: Codes/01/utils/__init__.py
+
+"""Utility helpers for reproducibility and experiment export."""
+
+from .repro import dataset_hash, get_git_commit, save_json, set_global_seed
+from .reproducibility import compute_dataset_hash
+
+__all__ = [
+    "dataset_hash",
+    "get_git_commit",
+    "save_json",
+    "set_global_seed",
+    "compute_dataset_hash",
+]
+
+
+==== END FILE ====
+---- FILE: Codes/01/utils/config_loader.py
+
+"""Configuration loading and validation utilities."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping
+
+import yaml
+
+
+class ConfigValidationError(ValueError):
+    """Raised when a configuration file fails validation."""
+
+
+def _deep_merge(base: MutableMapping[str, Any], override: Mapping[str, Any]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = dict(base)
+    for key, value in override.items():
+        if (
+            key in merged
+            and isinstance(merged[key], MutableMapping)
+            and isinstance(value, Mapping)
+        ):
+            merged[key] = _deep_merge(dict(merged[key]), value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+@dataclass
+class ConfigValidator:
+    """Schema-aware configuration validator."""
+
+    architecture_values: Iterable[str] = field(default_factory=lambda: ("unet", "unetpp"))
+    strategy_values: Iterable[str] = field(default_factory=lambda: ("single", "weighted", "mgda"))
+    pixel_loss_values: Iterable[str] = field(
+        default_factory=lambda: ("bce", "iou", "dice", "bce_iou", "focal")
+    )
+    scheduler_values: Iterable[str] = field(
+        default_factory=lambda: ("cosine", "step", "plateau")
+    )
+
+    def validate(self, config: Mapping[str, Any]) -> None:
+        """Validate required sections and enum values.
+
+        Parameters
+        ----------
+        config:
+            Resolved configuration dictionary.
+        """
+        required_sections = (
+            "project",
+            "data",
+            "model",
+            "loss",
+            "training",
+            "evaluation",
+            "export",
+        )
+        for section in required_sections:
+            if section not in config:
+                raise ConfigValidationError(f"Missing required config section: '{section}'")
+
+        architecture = str(config["model"].get("architecture", "")).lower()
+        if architecture not in set(self.architecture_values):
+            raise ConfigValidationError(
+                f"Unknown model architecture '{architecture}'. "
+                f"Expected one of {list(self.architecture_values)}."
+            )
+
+        strategy = str(config["loss"].get("strategy", "")).lower()
+        if strategy not in set(self.strategy_values):
+            raise ConfigValidationError(
+                f"Unknown loss strategy '{strategy}'. Expected {list(self.strategy_values)}."
+            )
+
+        pixel_type = str(config["loss"].get("pixel", {}).get("type", "")).lower()
+        if pixel_type not in set(self.pixel_loss_values):
+            raise ConfigValidationError(
+                f"Unknown pixel loss '{pixel_type}'. Expected {list(self.pixel_loss_values)}."
+            )
+
+        scheduler = str(config["training"].get("lr_scheduler", {}).get("type", "")).lower()
+        if scheduler not in set(self.scheduler_values):
+            raise ConfigValidationError(
+                f"Unknown scheduler '{scheduler}'. Expected {list(self.scheduler_values)}."
+            )
+
+        self._validate_ratios(config)
+        self._validate_paths(config)
+
+    @staticmethod
+    def _validate_ratios(config: Mapping[str, Any]) -> None:
+        data = config["data"]
+        train_ratio = float(data.get("train_ratio", 0.0))
+        val_ratio = float(data.get("val_ratio", 0.0))
+        test_ratio = float(data.get("test_ratio", 0.0))
+        ratio_sum = train_ratio + val_ratio + test_ratio
+        if abs(ratio_sum - 1.0) > 1e-6:
+            raise ConfigValidationError(
+                f"Data split ratios must sum to 1.0, got {ratio_sum:.6f} "
+                f"({train_ratio}, {val_ratio}, {test_ratio})."
+            )
+
+    @staticmethod
+    def _validate_paths(config: Mapping[str, Any]) -> None:
+        data = config["data"]
+        for key in ("rgb_dir", "mask_dir"):
+            value = data.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ConfigValidationError(f"Invalid path value for data.{key}: {value!r}")
+
+
+def resolve_config(base_config: Mapping[str, Any], overrides: Mapping[str, Any]) -> Dict[str, Any]:
+    """Deep merge overrides into a base configuration."""
+    return _deep_merge(dict(base_config), dict(overrides))
+
+
+def _load_yaml(path: Path) -> Dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        loaded = yaml.safe_load(handle) or {}
+    if not isinstance(loaded, dict):
+        raise ConfigValidationError(f"Config file must contain a mapping: {path}")
+    return loaded
+
+
+def load_config(path: str) -> Dict[str, Any]:
+    """Load YAML config with inheritance and validation.
+
+    Inheritance is declared via an optional top-level key:
+    ``inherits: configs/default.yaml``.
+    """
+    config_path = Path(path)
+    if not config_path.exists():
+        raise ConfigValidationError(f"Configuration file not found: {config_path}")
+
+    loaded = _load_yaml(config_path)
+    parent_ref = loaded.pop("inherits", None)
+
+    if parent_ref:
+        parent_path = (config_path.parent / str(parent_ref)).resolve()
+        if not parent_path.exists():
+            raise ConfigValidationError(
+                f"Parent config '{parent_ref}' declared in {config_path} was not found."
+            )
+        base_config = load_config(str(parent_path))
+        resolved = resolve_config(base_config, loaded)
+    else:
+        resolved = loaded
+
+    ConfigValidator().validate(resolved)
+    return resolved
+
+
+def config_to_flat_dict(config: Mapping[str, Any], prefix: str = "") -> Dict[str, Any]:
+    """Flatten nested mappings for logger-friendly output."""
+    flat: Dict[str, Any] = {}
+    for key, value in config.items():
+        full_key = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, Mapping):
+            flat.update(config_to_flat_dict(value, prefix=full_key))
+        else:
+            flat[full_key] = value
+    return flat
+
+
+def save_resolved_config(config: Mapping[str, Any], output_path: str) -> None:
+    """Persist resolved config as YAML."""
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(dict(config), handle, sort_keys=False)
+
+
+==== END FILE ====
+---- FILE: Codes/01/utils/registry.py
+
+"""Small reusable registry helper."""
+
+from dataclasses import dataclass, field
+from typing import Dict, Generic, Iterable, List, Optional, TypeVar
+
+
+T = TypeVar("T")
+
+
+def normalize_registry_name(name: str) -> str:
+    return name.lower().replace("_", "").replace("-", "").replace(" ", "").strip()
+
+
+@dataclass
+class RegistryEntry(Generic[T]):
+    name: str
+    value: T
+    aliases: tuple[str, ...] = ()
+    metadata: Dict[str, object] = field(default_factory=dict)
+
+
+class Registry(Generic[T]):
+    """Simple string-keyed registry with aliases and metadata."""
+
+    def __init__(self, label: str):
+        self.label = label
+        self._entries: Dict[str, RegistryEntry[T]] = {}
+
+    def register(
+        self,
+        name: str,
+        value: T,
+        aliases: Optional[Iterable[str]] = None,
+        metadata: Optional[Dict[str, object]] = None,
+        overwrite: bool = False,
+    ) -> RegistryEntry[T]:
+        names = [normalize_registry_name(name)]
+        if aliases:
+            names.extend(normalize_registry_name(alias) for alias in aliases)
+
+        if not overwrite:
+            for candidate in names:
+                if candidate in self._entries:
+                    raise ValueError(f"{self.label} '{name}' is already registered")
+
+        entry = RegistryEntry(
+            name=name,
+            value=value,
+            aliases=tuple(aliases or ()),
+            metadata=dict(metadata or {}),
+        )
+        for candidate in names:
+            self._entries[candidate] = entry
+        return entry
+
+    def get(self, name: str) -> RegistryEntry[T]:
+        normalized_name = normalize_registry_name(name)
+        if normalized_name not in self._entries:
+            available = ", ".join(self.list_names())
+            raise KeyError(f"Unknown {self.label} '{name}'. Available: {available}")
+        return self._entries[normalized_name]
+
+    def list_names(self) -> List[str]:
+        return sorted({entry.name for entry in self._entries.values()})
+
+
+
+==== END FILE ====
+---- FILE: Codes/01/utils/repro.py
+
+import hashlib
+import json
+import os
+import random
+import subprocess
+
+import numpy as np
+import tensorflow as tf
+
+
+def set_global_seed(seed):
+    """Set the random seed for Python, NumPy, and TensorFlow."""
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
+
+def compute_file_hash(path, chunk_size=65536):
+    sha = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
+
+
+def dataset_hash(file_paths):
+    """Compute a reproducible hash for a list of dataset file paths."""
+    hasher = hashlib.sha256()
+    for path in sorted(file_paths):
+        hasher.update(path.encode("utf-8"))
+        if os.path.exists(path):
+            hasher.update(compute_file_hash(path).encode("utf-8"))
+    return hasher.hexdigest()
+
+
+def get_git_commit():
+    """Return the current git commit hash or None if git is unavailable."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return None
+
+
+def save_json(path, data):
+    """Save a Python dictionary to JSON with indentation."""
+    def _json_default(value):
+        if isinstance(value, (np.integer,)):
+            return int(value)
+        if isinstance(value, (np.floating,)):
+            return float(value)
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, default=_json_default)
+
+
+==== END FILE ====
+---- FILE: Codes/01/utils/reproducibility.py
+
+"""Reproducibility helpers for deterministic experiments."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import random
+from pathlib import Path
+
+import numpy as np
+import tensorflow as tf
+
+
+def set_global_seed(seed: int = 42) -> None:
+    """Set all known random seeds.
+
+    Parameters
+    ----------
+    seed:
+        Random seed used for Python, NumPy, and TensorFlow.
+    """
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    os.environ["TF_DETERMINISTIC_OPS"] = "1"
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+    try:
+        tf.config.experimental.enable_op_determinism()
+    except Exception:
+        # Some TF builds do not expose deterministic kernels for every platform.
+        pass
+
+
+def compute_dataset_hash(data_dir: str) -> str:
+    """Compute lightweight dataset hash from file names and sizes.
+
+    Parameters
+    ----------
+    data_dir:
+        Root directory containing dataset files.
+
+    Returns
+    -------
+    str
+        SHA-256 hex digest prefix (16 chars).
+    """
+    hasher = hashlib.sha256()
+    root = Path(data_dir)
+    if not root.exists():
+        return "missing-dataset"
+
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            hasher.update(path.relative_to(root).as_posix().encode("utf-8"))
+            hasher.update(str(path.stat().st_size).encode("utf-8"))
+    return hasher.hexdigest()[:16]
+
+
+==== END FILE ====
+---- FILE: Codes/01/utils/system.py
+
+import os
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+
+def get_process_memory_mb():
+    """Return the current process memory usage in megabytes, or None if unavailable."""
+    if psutil is None:
+        return None
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024.0 / 1024.0
+
+
+==== END FILE ====
+---- FILE: Codes/01/utils/test_reporting.py
+
+"""Utilities for detailed unittest logging."""
+
+from __future__ import annotations
+
+import io
+import json
+import sys
+import time
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+from typing import TextIO
+
+
+class TeeStream:
+    """Mirror writes to multiple text streams."""
+
+    def __init__(self, *streams: TextIO) -> None:
+        self.streams = streams
+
+    def write(self, data: str) -> int:
+        for stream in self.streams:
+            stream.write(data)
+            stream.flush()
+        return len(data)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
+
+    def isatty(self) -> bool:
+        return any(getattr(stream, "isatty", lambda: False)() for stream in self.streams)
+
+
+class DetailedTextTestResult(unittest.TextTestResult):
+    """Text test result that records per-test timing and errors."""
+
+    def __init__(self, stream, descriptions, verbosity, detail_handle: TextIO) -> None:
+        super().__init__(stream, descriptions, verbosity)
+        self.detail_handle = detail_handle
+        self.test_timings: list[dict[str, object]] = []
+        self._started_at = 0.0
+
+    def startTest(self, test: unittest.case.TestCase) -> None:
+        self._started_at = time.time()
+        self.detail_handle.write(f"[START] {self.getDescription(test)}\n")
+        self.detail_handle.flush()
+        super().startTest(test)
+
+    def stopTest(self, test: unittest.case.TestCase) -> None:
+        elapsed = time.time() - self._started_at
+        self.test_timings.append({"test": self.getDescription(test), "seconds": round(elapsed, 4)})
+        self.detail_handle.write(f"[STOP] {self.getDescription(test)} ({elapsed:.2f}s)\n")
+        self.detail_handle.flush()
+        super().stopTest(test)
+
+    def addSuccess(self, test: unittest.case.TestCase) -> None:
+        self.detail_handle.write(f"[PASS] {self.getDescription(test)}\n")
+        self.detail_handle.flush()
+        super().addSuccess(test)
+
+    def addFailure(self, test: unittest.case.TestCase, err) -> None:
+        self.detail_handle.write(f"[FAIL] {self.getDescription(test)}\n")
+        self.detail_handle.write(self._exc_info_to_string(err, test) + "\n")
+        self.detail_handle.flush()
+        super().addFailure(test, err)
+
+    def addError(self, test: unittest.case.TestCase, err) -> None:
+        self.detail_handle.write(f"[ERROR] {self.getDescription(test)}\n")
+        self.detail_handle.write(self._exc_info_to_string(err, test) + "\n")
+        self.detail_handle.flush()
+        super().addError(test, err)
+
+    def addSkip(self, test: unittest.case.TestCase, reason: str) -> None:
+        self.detail_handle.write(f"[SKIP] {self.getDescription(test)} :: {reason}\n")
+        self.detail_handle.flush()
+        super().addSkip(test, reason)
+
+    def addExpectedFailure(self, test: unittest.case.TestCase, err) -> None:
+        self.detail_handle.write(f"[XFAIL] {self.getDescription(test)}\n")
+        self.detail_handle.flush()
+        super().addExpectedFailure(test, err)
+
+    def addUnexpectedSuccess(self, test: unittest.case.TestCase) -> None:
+        self.detail_handle.write(f"[XPASS] {self.getDescription(test)}\n")
+        self.detail_handle.flush()
+        super().addUnexpectedSuccess(test)
+
+
+class DetailedTextTestRunner(unittest.TextTestRunner):
+    """Text runner that writes full progress and traceback logs to disk."""
+
+    resultclass = DetailedTextTestResult
+
+    def __init__(self, *args, detail_handle: TextIO, **kwargs) -> None:
+        self.detail_handle = detail_handle
+        super().__init__(*args, **kwargs)
+
+    def _makeResult(self):
+        return self.resultclass(self.stream, self.descriptions, self.verbosity, self.detail_handle)
+
+
+def run_suite_with_logging(
+    suite: unittest.TestSuite,
+    report_dir: str | Path = "results",
+    verbosity: int = 2,
+) -> tuple[unittest.TestResult, Path, Path]:
+    """Run a unittest suite and persist detailed logs and summary artifacts."""
+    report_root = Path(report_dir)
+    report_root.mkdir(parents=True, exist_ok=True)
+    summary_path = report_root / "test_report.txt"
+    detail_path = report_root / "test_details.log"
+    timings_path = report_root / "test_timings.json"
+    failures_path = report_root / "test_failures.log"
+
+    with detail_path.open("w", encoding="utf-8") as detail_handle:
+        tee_stream = TeeStream(sys.stderr, detail_handle)
+        detail_handle.write(f"Detailed test log started at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        detail_handle.flush()
+        runner = DetailedTextTestRunner(
+            stream=tee_stream,
+            verbosity=verbosity,
+            detail_handle=detail_handle,
+        )
+        with redirect_stdout(tee_stream), redirect_stderr(tee_stream):
+            result = runner.run(suite)
+        summary_path.write_text(
+            "\n".join(
+                [
+                    f"tests_run={result.testsRun}",
+                    f"failures={len(result.failures)}",
+                    f"errors={len(result.errors)}",
+                    f"skipped={len(getattr(result, 'skipped', []))}",
+                    f"expected_failures={len(getattr(result, 'expectedFailures', []))}",
+                    f"unexpected_successes={len(getattr(result, 'unexpectedSuccesses', []))}",
+                    f"was_successful={result.wasSuccessful()}",
+                    f"detail_log={detail_path}",
+                    f"timings_log={timings_path}",
+                    f"failures_log={failures_path}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        timings_path.write_text(
+            json.dumps(getattr(result, "test_timings", []), indent=2),
+            encoding="utf-8",
+        )
+        failure_blocks = []
+        for test_case, traceback_text in list(result.failures) + list(result.errors):
+            failure_blocks.append(f"[{test_case.id()}]\n{traceback_text}")
+        failures_path.write_text(
+            "\n\n".join(failure_blocks) if failure_blocks else "No failures or errors.\n",
+            encoding="utf-8",
+        )
+    return result, summary_path, detail_path
+
+
+==== END FILE ====
+---- FILE: Codes/01/visualization/__init__.py
+
+"""Visualization utilities for semantic segmentation experiments."""
+
+from .boundary_overlay import generate_boundary_overlay
+from .complexity_plot import generate_complexity_plot
+from .error_maps import generate_error_maps
+from .latex_tables import dataframe_to_latex, generate_all_paper_tables
+from .loss_curves import generate_loss_curves
+from .pareto_plot import generate_pareto_2d, generate_pareto_3d
+from .prediction_grid import generate_prediction_grid
+from .style import COLORS, JOURNAL_STYLE, apply_journal_style, save_figure
+from .visualization import (
+    plot_loss_curves,
+    save_boundary_overlay,
+    save_error_maps,
+    save_pareto_plot,
+    save_prediction_grid,
+    save_sample_predictions,
+)
+
+__all__ = [
+    "COLORS",
+    "JOURNAL_STYLE",
+    "apply_journal_style",
+    "save_figure",
+    "generate_prediction_grid",
+    "generate_boundary_overlay",
+    "generate_pareto_2d",
+    "generate_pareto_3d",
+    "generate_loss_curves",
+    "generate_error_maps",
+    "generate_complexity_plot",
+    "dataframe_to_latex",
+    "generate_all_paper_tables",
+    "save_sample_predictions",
+    "save_boundary_overlay",
+    "plot_loss_curves",
+    "save_pareto_plot",
+    "save_error_maps",
+    "save_prediction_grid",
+]
+
+
+==== END FILE ====
+---- FILE: Codes/01/visualization/boundary_overlay.py
+
+"""Boundary overlay visualization for model comparisons."""
+
+from __future__ import annotations
+
+from typing import Dict
+
+import matplotlib.pyplot as plt
+import numpy as np
+import tensorflow as tf
+
+from visualization.style import save_figure
+
+
+def _boundary(mask: np.ndarray) -> np.ndarray:
+    mask = (mask.squeeze() > 0.5).astype(np.float32)
+    dil = np.pad(mask, 1, mode="edge")
+    center = dil[1:-1, 1:-1]
+    neighbors = (
+        dil[:-2, 1:-1]
+        + dil[2:, 1:-1]
+        + dil[1:-1, :-2]
+        + dil[1:-1, 2:]
+    )
+    return ((center > 0) & (neighbors < 4)).astype(np.float32)
+
+
+def generate_boundary_overlay(
+    models_dict: Dict[str, tf.keras.Model],
+    dataset: tf.data.Dataset,
+    num_samples: int = 6,
+    save_path: str = "figures/boundary_overlay",
+) -> None:
+    """Generate boundary overlay comparison figure."""
+    samples = []
+    for image, mask in dataset.unbatch().take(num_samples):
+        samples.append((image.numpy(), mask.numpy()))
+    if not samples:
+        return
+
+    model_names = list(models_dict.keys())
+    fig, axes = plt.subplots(len(samples), len(model_names), figsize=(3.5 * len(model_names), 3 * len(samples)))
+    if len(samples) == 1:
+        axes = np.expand_dims(axes, axis=0)
+    if len(model_names) == 1:
+        axes = np.expand_dims(axes, axis=1)
+
+    for row_idx, (image, gt_mask) in enumerate(samples):
+        gt_boundary = _boundary(gt_mask)
+        x = tf.expand_dims(tf.convert_to_tensor(image, dtype=tf.float32), axis=0)
+        for col_idx, model_name in enumerate(model_names):
+            pred = models_dict[model_name](x, training=False)
+            if isinstance(pred, list):
+                pred = pred[-1]
+            pred_boundary = _boundary(pred.numpy()[0])
+            overlay = image.copy()
+            overlay[gt_boundary > 0.5] = [0.0, 1.0, 0.0]
+            overlay[pred_boundary > 0.5] = [1.0, 0.0, 0.0]
+            axes[row_idx, col_idx].imshow(overlay)
+            axes[row_idx, col_idx].set_title(model_name)
+            axes[row_idx, col_idx].axis("off")
+
+    fig.tight_layout()
+    save_figure(fig, save_path)
+
+
+==== END FILE ====
+---- FILE: Codes/01/visualization/complexity_plot.py
+
+"""Model complexity visualization helpers."""
+
+from __future__ import annotations
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from visualization.style import COLORS, save_figure
+
+
+def generate_complexity_plot(
+    complexity_data: pd.DataFrame,
+    save_path: str = "figures/flops_vs_accuracy",
+) -> None:
+    """Generate FLOPs-vs-IoU scatter with parameter-scaled markers."""
+    if complexity_data.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    gflops = complexity_data["flops"] / 1e9
+    iou = complexity_data["iou"]
+    params = complexity_data["total_params"]
+    strategy = complexity_data.get("strategy", pd.Series(["unknown"] * len(complexity_data)))
+
+    colors = [COLORS.get(str(s), "#4C72B0") for s in strategy]
+    marker_sizes = 30 + 170 * (params / np.maximum(params.max(), 1.0))
+    ax.scatter(gflops, iou, s=marker_sizes, c=colors, alpha=0.8)
+
+    for _, row in complexity_data.iterrows():
+        ax.annotate(
+            str(row.get("experiment_name", "exp")),
+            (row["flops"] / 1e9, row["iou"]),
+            textcoords="offset points",
+            xytext=(4, 4),
+            fontsize=8,
+        )
+
+    # Pareto-like frontier in FLOPs-IoU plane (maximize IoU, minimize FLOPs).
+    sorted_df = complexity_data.sort_values("flops")
+    frontier_x = []
+    frontier_y = []
+    best_iou = -float("inf")
+    for _, row in sorted_df.iterrows():
+        if float(row["iou"]) > best_iou:
+            best_iou = float(row["iou"])
+            frontier_x.append(float(row["flops"] / 1e9))
+            frontier_y.append(float(row["iou"]))
+    if frontier_x:
+        ax.plot(frontier_x, frontier_y, color="#E74C3C", linewidth=1.5, label="Pareto frontier")
+
+    ax.set_xlabel("FLOPs (GFLOPs)")
+    ax.set_ylabel("IoU")
+    ax.legend(loc="best")
+    fig.tight_layout()
+    save_figure(fig, save_path)
+
+
+==== END FILE ====
+---- FILE: Codes/01/visualization/error_maps.py
+
+"""Error map visualizations for segmentation results."""
+
+from __future__ import annotations
+
+from typing import Dict
+
+import matplotlib.pyplot as plt
+import numpy as np
+import tensorflow as tf
+
+from visualization.style import save_figure
+
+
+def _error_overlay(rgb: np.ndarray, gt: np.ndarray, pred: np.ndarray) -> np.ndarray:
+    gt = gt.squeeze() > 0.5
+    pred = pred.squeeze() > 0.5
+    overlay = np.ones((*gt.shape, 3), dtype=np.float32)
+    overlay[gt & pred] = [0.0, 1.0, 0.0]  # TP
+    overlay[(~gt) & pred] = [1.0, 0.0, 0.0]  # FP
+    overlay[gt & (~pred)] = [0.0, 0.0, 1.0]  # FN
+    blended = 0.5 * np.clip(rgb, 0.0, 1.0) + 0.5 * overlay
+    return blended
+
+
+def generate_error_maps(
+    models_dict: Dict[str, tf.keras.Model],
+    dataset: tf.data.Dataset,
+    num_samples: int = 4,
+    save_path: str = "figures/error_maps",
+) -> None:
+    """Generate per-sample and aggregate error maps."""
+    samples = []
+    for image, mask in dataset.unbatch().take(num_samples):
+        samples.append((image.numpy(), mask.numpy()))
+    if not samples:
+        return
+
+    model_names = list(models_dict.keys())
+    fig, axes = plt.subplots(
+        len(samples),
+        2 + len(model_names),
+        figsize=(3.2 * (2 + len(model_names)), 2.8 * len(samples)),
+    )
+    if len(samples) == 1:
+        axes = np.expand_dims(axes, axis=0)
+
+    for row_idx, (image, gt_mask) in enumerate(samples):
+        axes[row_idx, 0].imshow(image)
+        axes[row_idx, 0].set_title("RGB")
+        axes[row_idx, 0].axis("off")
+        axes[row_idx, 1].imshow(gt_mask.squeeze(), cmap="gray")
+        axes[row_idx, 1].set_title("GT")
+        axes[row_idx, 1].axis("off")
+        x = tf.expand_dims(tf.convert_to_tensor(image, dtype=tf.float32), axis=0)
+        for col_idx, model_name in enumerate(model_names, start=2):
+            pred = models_dict[model_name](x, training=False)
+            if isinstance(pred, list):
+                pred = pred[-1]
+            error_map = _error_overlay(image, gt_mask, pred.numpy()[0])
+            axes[row_idx, col_idx].imshow(error_map)
+            axes[row_idx, col_idx].set_title(model_name)
+            axes[row_idx, col_idx].axis("off")
+
+    fig.tight_layout()
+    save_figure(fig, save_path)
+
+
+==== END FILE ====
+---- FILE: Codes/01/visualization/latex_tables.py
+
+"""LaTeX table helpers for publication-ready exports."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Dict
+
+import pandas as pd
+
+
+def dataframe_to_latex(
+    df: pd.DataFrame,
+    caption: str,
+    label: str,
+    highlight_best: bool = True,
+    highlight_col_direction: Dict[str, str] | None = None,
+    save_path: str = "tables/metrics.tex",
+) -> str:
+    """Convert a dataframe into a Booktabs-style LaTeX table."""
+    working = df.copy()
+    highlight_col_direction = highlight_col_direction or {}
+
+    if highlight_best and not working.empty:
+        working = working.astype(object)
+        for column, direction in highlight_col_direction.items():
+            if column not in working.columns:
+                continue
+            if direction == "max":
+                best_index = working[column].astype(float).idxmax()
+            else:
+                best_index = working[column].astype(float).idxmin()
+            working.loc[best_index, column] = f"\\textbf{{{working.loc[best_index, column]}}}"
+
+    latex = working.to_latex(index=False, escape=False, caption=caption, label=label, bold_rows=False)
+    path = Path(save_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(latex, encoding="utf-8")
+    return latex
+
+
+def generate_all_paper_tables(results_registry: dict, save_dir: str) -> None:
+    """Generate placeholder paper tables from experiment registry records."""
+    save_root = Path(save_dir)
+    save_root.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for name, payload in results_registry.items():
+        rows.append(
+            {
+                "experiment_name": name,
+                "status": payload.get("status"),
+                "test_iou": payload.get("test_iou", 0.0),
+                "results_path": payload.get("results_path", ""),
+            }
+        )
+    df = pd.DataFrame(rows)
+    df.to_csv(save_root / "strategy_comparison.csv", index=False)
+    dataframe_to_latex(
+        df,
+        caption="Strategy Comparison",
+        label="tab:strategy_comparison",
+        highlight_best=True,
+        highlight_col_direction={"test_iou": "max"},
+        save_path=str(save_root / "strategy_comparison.tex"),
+    )
+
+
+==== END FILE ====
+---- FILE: Codes/01/visualization/loss_curves.py
+
+"""Loss curve plotting utilities."""
+
+from __future__ import annotations
+
+from typing import Dict
+
+import matplotlib.pyplot as plt
+import pandas as pd
+
+from visualization.style import COLORS, save_figure
+
+
+def _ema(series: pd.Series, alpha: float = 0.9) -> pd.Series:
+    return series.ewm(alpha=1 - alpha, adjust=False).mean()
+
+
+def generate_loss_curves(
+    csv_paths: Dict[str, str],
+    save_path: str = "figures/loss_curves",
+) -> None:
+    """Generate a 2x2 grid of train/val loss curves."""
+    fig, axes = plt.subplots(2, 2, figsize=(10, 7))
+    plot_specs = [
+        ("train_loss", "val_loss", "Total Loss"),
+        ("train_pixel_loss", "val_pixel_loss", "Pixel Loss"),
+        ("train_boundary_loss", "val_boundary_loss", "Boundary Loss"),
+        ("train_shape_loss", "val_shape_loss", "Shape Loss"),
+    ]
+    for experiment_name, csv_path in csv_paths.items():
+        df = pd.read_csv(csv_path)
+        color = COLORS.get(experiment_name, None)
+        for axis, (train_col, val_col, title) in zip(axes.flatten(), plot_specs):
+            if train_col in df:
+                axis.plot(df["epoch"], df[train_col], color=color, alpha=0.2)
+                axis.plot(df["epoch"], _ema(df[train_col]), color=color, label=f"{experiment_name} train")
+            if val_col in df:
+                axis.plot(df["epoch"], df[val_col], color=color, alpha=0.15, linestyle="--")
+                axis.plot(
+                    df["epoch"],
+                    _ema(df[val_col]),
+                    color=color,
+                    linestyle="--",
+                    label=f"{experiment_name} val",
+                )
+            axis.set_title(title)
+            axis.set_xlabel("Epoch")
+            axis.set_ylabel("Loss")
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="upper center", ncol=3, bbox_to_anchor=(0.5, 1.02))
+    fig.tight_layout()
+    save_figure(fig, save_path)
+
+
+==== END FILE ====
+---- FILE: Codes/01/visualization/pareto_plot.py
+
+"""Pareto front plotting utilities."""
+
+from __future__ import annotations
+
+import matplotlib.pyplot as plt
+import pandas as pd
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+from visualization.style import COLORS, save_figure
+
+
+def generate_pareto_2d(
+    results_df: pd.DataFrame,
+    pareto_df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    mgda_points: pd.DataFrame | None = None,
+    save_path: str = "figures/pareto_2d",
+) -> None:
+    """Generate 2D Pareto scatter plot."""
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.scatter(
+        results_df[x_col],
+        results_df[y_col],
+        c=COLORS["pareto_dominated"],
+        label=f"Dominated ({len(results_df)})",
+        alpha=0.6,
+    )
+    if not pareto_df.empty:
+        sorted_front = pareto_df.sort_values(by=x_col)
+        ax.plot(sorted_front[x_col], sorted_front[y_col], color=COLORS["pareto_front"], linewidth=1.5)
+        ax.scatter(
+            sorted_front[x_col],
+            sorted_front[y_col],
+            c=COLORS["pareto_front"],
+            marker="D",
+            s=60,
+            label=f"Pareto ({len(sorted_front)})",
+        )
+    if mgda_points is not None and not mgda_points.empty:
+        ax.scatter(
+            mgda_points[x_col],
+            mgda_points[y_col],
+            c=COLORS["mgda_point"],
+            marker="*",
+            s=120,
+            label="MGDA",
+        )
+    ax.set_xlabel(x_col)
+    ax.set_ylabel(y_col)
+    ax.legend()
+    ax.annotate("better", xy=(0.95, 0.05), xycoords="axes fraction", ha="right")
+    fig.tight_layout()
+    save_figure(fig, save_path)
+
+
+def generate_pareto_3d(
+    results_df: pd.DataFrame,
+    pareto_df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    z_col: str,
+    save_path: str = "figures/pareto_3d",
+) -> None:
+    """Generate 3D Pareto scatter plot."""
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(111, projection="3d")  # type: ignore[arg-type]
+    ax.scatter(results_df[x_col], results_df[y_col], results_df[z_col], c=COLORS["pareto_dominated"], alpha=0.3)
+    if not pareto_df.empty:
+        ax.scatter(
+            pareto_df[x_col],
+            pareto_df[y_col],
+            pareto_df[z_col],
+            c=COLORS["pareto_front"],
+            s=50,
+        )
+    ax.set_xlabel(x_col)
+    ax.set_ylabel(y_col)
+    ax.set_zlabel(z_col)
+    fig.tight_layout()
+    save_figure(fig, save_path)
+
+
+==== END FILE ====
+---- FILE: Codes/01/visualization/prediction_grid.py
+
+"""Prediction grid visualization."""
+
+from __future__ import annotations
+
+from typing import Dict
+
+import matplotlib.pyplot as plt
+import numpy as np
+import tensorflow as tf
+
+from visualization.style import save_figure
+
+
+def _overlay(rgb: np.ndarray, gt: np.ndarray, pred: np.ndarray) -> np.ndarray:
+    rgb = np.clip(rgb, 0.0, 1.0).copy()
+    gt = gt.squeeze() > 0.5
+    pred = pred.squeeze() > 0.5
+    tp = gt & pred
+    fp = (~gt) & pred
+    fn = gt & (~pred)
+    rgb[tp] = np.array([0.0, 1.0, 0.0]) * 0.7 + rgb[tp] * 0.3
+    rgb[fp] = np.array([1.0, 0.0, 0.0]) * 0.7 + rgb[fp] * 0.3
+    rgb[fn] = np.array([0.0, 0.0, 1.0]) * 0.7 + rgb[fn] * 0.3
+    return rgb
+
+
+def generate_prediction_grid(
+    models_dict: Dict[str, tf.keras.Model],
+    dataset: tf.data.Dataset,
+    num_samples: int = 8,
+    save_path: str = "figures/sample_predictions",
+) -> None:
+    """Generate qualitative prediction grid figure."""
+    samples = []
+    for images, masks in dataset.unbatch().take(num_samples):
+        samples.append((images.numpy(), masks.numpy()))
+    if not samples:
+        return
+
+    model_names = list(models_dict.keys())
+    n_cols = 2 + len(model_names)
+    fig, axes = plt.subplots(len(samples), n_cols, figsize=(14, 2.5 * len(samples)))
+    if len(samples) == 1:
+        axes = np.expand_dims(axes, axis=0)
+
+    for row_idx, (image, mask) in enumerate(samples):
+        axes[row_idx, 0].imshow(image)
+        axes[row_idx, 0].set_title("RGB")
+        axes[row_idx, 1].imshow(mask.squeeze(), cmap="gray")
+        axes[row_idx, 1].set_title("GT")
+        axes[row_idx, 0].axis("off")
+        axes[row_idx, 1].axis("off")
+
+        x = tf.expand_dims(tf.convert_to_tensor(image, dtype=tf.float32), axis=0)
+        for col_idx, model_name in enumerate(model_names, start=2):
+            pred = models_dict[model_name](x, training=False)
+            if isinstance(pred, list):
+                pred = pred[-1]
+            pred_np = (pred.numpy()[0] > 0.5).astype(np.float32)
+            axes[row_idx, col_idx].imshow(_overlay(image, mask, pred_np))
+            axes[row_idx, col_idx].set_title(model_name)
+            axes[row_idx, col_idx].axis("off")
+
+    fig.tight_layout()
+    save_figure(fig, save_path)
+
+
+==== END FILE ====
+---- FILE: Codes/01/visualization/style.py
+
+"""Journal-quality plotting style helpers."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Iterable
+
+import matplotlib.pyplot as plt
+
+
+JOURNAL_STYLE = {
+    "font.family": "serif",
+    "font.serif": ["Times New Roman", "DejaVu Serif"],
+    "font.size": 10,
+    "axes.labelsize": 11,
+    "axes.titlesize": 12,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "legend.fontsize": 9,
+    "figure.dpi": 300,
+    "savefig.dpi": 300,
+    "savefig.bbox": "tight",
+    "savefig.pad_inches": 0.05,
+    "axes.grid": True,
+    "grid.alpha": 0.3,
+    "lines.linewidth": 1.5,
+}
+
+COLORS = {
+    "unet_single": "#1f77b4",
+    "unet_weighted": "#ff7f0e",
+    "unet_mgda": "#2ca02c",
+    "unetpp_single": "#d62728",
+    "unetpp_weighted": "#9467bd",
+    "unetpp_mgda": "#8c564b",
+    "unetpp_deepsup": "#e377c2",
+    "pareto_dominated": "#cccccc",
+    "pareto_front": "#e74c3c",
+    "mgda_point": "#2ecc71",
+}
+
+
+def apply_journal_style() -> None:
+    """Apply journal-style plotting defaults."""
+    plt.rcParams.update(JOURNAL_STYLE)
+
+
+def save_figure(fig: plt.Figure, path_stem: str, formats: Iterable[str] = ("pdf", "png")) -> None:
+    """Save figure in all requested formats at 300 DPI."""
+    apply_journal_style()
+    stem = Path(path_stem)
+    stem.parent.mkdir(parents=True, exist_ok=True)
+    for fmt in formats:
+        fig.savefig(stem.with_suffix(f".{fmt}"), dpi=300)
+    plt.close(fig)
+
+
+==== END FILE ====
