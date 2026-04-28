@@ -1,0 +1,1996 @@
+Part 5 of 16
+
+---- FILE: Codes/01/src/evaluate.py
+
+"""Comprehensive evaluation module for segmentation models.
+
+This module provides evaluation functions for computing all metrics,
+generating visualizations, and saving results in publication-ready formats.
+"""
+
+import os
+import logging
+from typing import Dict, Any, List, Tuple, Optional
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from training.metrics import (
+    iou_score, dice_score, precision_score, recall_score,
+    pixel_accuracy, boundary_iou, boundary_f1
+)
+from models.model_factory import get_model_info, estimate_flops, measure_inference_time
+from src.objectives import list_objectives
+
+logger = logging.getLogger(__name__)
+
+
+def evaluate_model(
+    model: keras.Model,
+    dataset: Any,
+    config: Dict[str, Any] = None
+) -> Dict[str, Any]:
+    """Comprehensive model evaluation.
+    
+    Parameters
+    ----------
+    model : keras.Model
+        Model to evaluate
+    dataset : Any
+        Evaluation dataset
+    config : Dict[str, Any] or None
+        Configuration dictionary
+    
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing all evaluation metrics
+    """
+    logger.info("Starting model evaluation...")
+    
+    results = {}
+    
+    # 1. Segmentation metrics
+    seg_metrics = evaluate_segmentation_metrics(model, dataset)
+    results.update(seg_metrics)
+    
+    # 2. Model complexity metrics
+    complexity_metrics = evaluate_model_complexity(model)
+    results.update(complexity_metrics)
+    
+    # 3. Inference time metrics
+    inference_metrics = evaluate_inference_time(model, config)
+    results.update(inference_metrics)
+    
+    logger.info("Evaluation complete.")
+    logger.info(f"IoU: {results.get('iou', 0):.4f}, F1: {results.get('f1_score', 0):.4f}")
+    logger.info(f"Parameters: {results.get('param_count', 0):,}, FLOPs: {results.get('flops', 0):,}")
+    
+    return results
+
+
+def evaluate_segmentation_metrics(
+    model: keras.Model,
+    dataset: Any
+) -> Dict[str, float]:
+    """Evaluate segmentation quality metrics.
+    
+    Parameters
+    ----------
+    model : keras.Model
+        Model to evaluate
+    dataset : Any
+        Dataset with images and masks
+    
+    Returns
+    -------
+    Dict[str, float]
+        Dictionary of segmentation metrics
+    """
+    metrics = {
+        'iou': [],
+        'f1_score': [],
+        'precision': [],
+        'recall': [],
+        'accuracy': [],
+        'boundary_iou': [],
+        'boundary_f1': [],
+    }
+    
+    for batch_idx in range(len(dataset)):
+        x_batch, y_batch = dataset[batch_idx]
+        y_pred = model.predict(x_batch, verbose=0)
+        
+        for i in range(len(x_batch)):
+            y_true = y_batch[i:i+1]
+            y_pred_single = y_pred[i:i+1]
+            
+            # Compute metrics
+            metrics['iou'].append(float(iou_score(y_true, y_pred_single)))
+            metrics['f1_score'].append(float(dice_score(y_true, y_pred_single)))
+            metrics['precision'].append(float(precision_score(y_true, y_pred_single)))
+            metrics['recall'].append(float(recall_score(y_true, y_pred_single)))
+            metrics['accuracy'].append(float(pixel_accuracy(y_true, y_pred_single)))
+            metrics['boundary_iou'].append(float(boundary_iou(y_true, y_pred_single)))
+            metrics['boundary_f1'].append(float(boundary_f1(y_true, y_pred_single)))
+    
+    # Aggregate metrics
+    results = {}
+    for key, values in metrics.items():
+        results[key] = float(np.mean(values))
+        results[f'{key}_std'] = float(np.std(values))
+    
+    return results
+
+
+def evaluate_model_complexity(model: keras.Model) -> Dict[str, Any]:
+    """Evaluate model complexity metrics.
+    
+    Parameters
+    ----------
+    model : keras.Model
+        Model to analyze
+    
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary with complexity metrics
+    """
+    info = get_model_info(model)
+    flops = estimate_flops(model)
+    
+    return {
+        'param_count': info['total_params'],
+        'trainable_params': info['trainable_params'],
+        'non_trainable_params': info['non_trainable_params'],
+        'flops': flops,
+        'model_layers': info['layers'],
+    }
+
+
+def evaluate_inference_time(
+    model: keras.Model,
+    config: Dict[str, Any] = None
+) -> Dict[str, float]:
+    """Evaluate inference time metrics.
+    
+    Parameters
+    ----------
+    model : keras.Model
+        Model to benchmark
+    config : Dict[str, Any] or None
+        Configuration with input shape
+    
+    Returns
+    -------
+    Dict[str, float]
+        Dictionary with timing metrics
+    """
+    # Determine input shape
+    if config and 'tile_size' in config:
+        tile_size = config['tile_size']
+        input_shape = (1, tile_size, tile_size, 3)
+    else:
+        input_shape = (1, 256, 256, 3)
+    
+    timing = measure_inference_time(model, input_shape=input_shape, num_runs=100)
+    
+    return {
+        'inference_time': timing['mean_ms'],
+        'inference_time_std': timing['std_ms'],
+        'inference_time_min': timing['min_ms'],
+        'inference_time_max': timing['max_ms'],
+    }
+
+
+def generate_comparison_table(
+    results: List[Dict[str, Any]],
+    output_path: str,
+    metrics: List[str] = None
+) -> pd.DataFrame:
+    """Generate comparison table of multiple experiments.
+    
+    Parameters
+    ----------
+    results : List[Dict[str, Any]]
+        List of experiment results
+    output_path : str
+        Path to save table
+    metrics : List[str] or None
+        Metrics to include
+    
+    Returns
+    -------
+    pd.DataFrame
+        Comparison DataFrame
+    """
+    if metrics is None:
+        metrics = ['experiment_id', 'architecture', 'encoder'] + [
+            metric for metric in ['iou', 'f1_score', 'precision', 'recall', 'boundary_iou', 'boundary_f1', 'param_count', 'flops', 'inference_time']
+            if metric in list_objectives() or metric in {'experiment_id', 'architecture', 'encoder'}
+        ]
+    
+    # Create DataFrame
+    df = pd.DataFrame(results)
+    
+    # Select relevant columns
+    available_cols = [col for col in metrics if col in df.columns]
+    df = df[available_cols]
+    
+    # Format for display
+    if 'param_count' in df.columns:
+        df['param_count_formatted'] = df['param_count'].apply(
+            lambda x: f"{x/1e6:.2f}M" if x >= 1e6 else f"{x/1e3:.2f}K"
+        )
+    
+    if 'flops' in df.columns:
+        df['flops_formatted'] = df['flops'].apply(
+            lambda x: f"{x/1e9:.2f}G" if x >= 1e9 else f"{x/1e6:.2f}M"
+        )
+    
+    if 'inference_time' in df.columns:
+        df['inference_time_formatted'] = df['inference_time'].apply(
+            lambda x: f"{x:.2f} ms"
+        )
+    
+    # Save to CSV
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    df.to_csv(output_path, index=False)
+    
+    logger.info(f"Saved comparison table to {output_path}")
+    
+    return df
+
+
+def generate_latex_table(
+    results: List[Dict[str, Any]],
+    output_path: str,
+    top_k: int = 10,
+    sort_by: str = 'iou'
+) -> str:
+    """Generate LaTeX table of top results.
+    
+    Parameters
+    ----------
+    results : List[Dict[str, Any]]
+        Experiment results
+    output_path : str
+        Path to save LaTeX file
+    top_k : int
+        Number of top results to include
+    sort_by : str
+        Metric to sort by
+    
+    Returns
+    -------
+    str
+        LaTeX table string
+    """
+    # Sort results
+    sorted_results = sorted(results, key=lambda x: x.get(sort_by, 0), reverse=True)[:top_k]
+    
+    # Create DataFrame
+    df = pd.DataFrame(sorted_results)
+    
+    # Select and rename columns
+    col_map = {
+        'architecture': 'Architecture',
+        'encoder': 'Encoder',
+        'iou': 'IoU',
+        'f1_score': 'F1',
+        'precision': 'Precision',
+        'recall': 'Recall',
+        'param_count': 'Params',
+        'flops': 'FLOPs',
+        'inference_time': 'Time (ms)',
+    }
+    
+    available_cols = [col for col in col_map.keys() if col in df.columns]
+    df = df[available_cols].rename(columns=col_map)
+    
+    # Format values
+    if 'Params' in df.columns:
+        df['Params'] = df['Params'].apply(lambda x: f"{x/1e6:.2f}M")
+    if 'FLOPs' in df.columns:
+        df['FLOPs'] = df['FLOPs'].apply(lambda x: f"{x/1e9:.2f}G")
+    if 'Time (ms)' in df.columns:
+        df['Time (ms)'] = df['Time (ms)'].apply(lambda x: f"{x:.1f}")
+    
+    for col in ['IoU', 'F1', 'Precision', 'Recall']:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda x: f"{x:.4f}")
+    
+    # Generate LaTeX
+    latex = df.to_latex(index=False, escape=False)
+    
+    # Add table environment
+    latex_str = f"""\\\\begin{{table}}[htbp]
+\\\\centering
+\\\\caption{{Top {top_k} Model Configurations by {sort_by.replace('_', ' ').title()}}}
+\\\\label{{tab:top_results}}
+{latex}
+\\\\end{{table}}
+"""
+    
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, 'w') as f:
+        f.write(latex_str)
+    
+    logger.info(f"Saved LaTeX table to {output_path}")
+    
+    return latex_str
+
+
+def plot_metric_distributions(
+    results: List[Dict[str, Any]],
+    output_dir: str,
+    metrics: List[str] = None,
+    group_by: str = 'architecture'
+) -> Dict[str, str]:
+    """Plot distributions of metrics across experiments.
+    
+    Parameters
+    ----------
+    results : List[Dict[str, Any]]
+        Experiment results
+    output_dir : str
+        Directory to save plots
+    metrics : List[str] or None
+        Metrics to plot
+    group_by : str
+        Attribute to group by
+    
+    Returns
+    -------
+    Dict[str, str]
+        Dictionary mapping metric names to plot paths
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    if metrics is None:
+        metrics = ['iou', 'f1_score', 'param_count', 'inference_time']
+    
+    df = pd.DataFrame(results)
+    
+    plot_paths = {}
+    
+    for metric in metrics:
+        if metric not in df.columns:
+            continue
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        if group_by in df.columns:
+            # Box plot grouped by attribute
+            df.boxplot(column=metric, by=group_by, ax=ax)
+            plt.suptitle('')  # Remove default title
+        else:
+            # Simple histogram
+            ax.hist(df[metric], bins=20, edgecolor='black', alpha=0.7)
+        
+        ax.set_title(f'{metric.replace("_", " ").title()} Distribution', fontsize=14)
+        ax.set_xlabel(metric.replace('_', ' ').title())
+        ax.set_ylabel('Frequency')
+        
+        plt.tight_layout()
+        
+        path = os.path.join(output_dir, f'{metric}_distribution.png')
+        fig.savefig(path, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        
+        plot_paths[metric] = path
+    
+    logger.info(f"Generated {len(plot_paths)} distribution plots")
+    
+    return plot_paths
+
+
+def plot_confusion_matrix(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    output_path: str,
+    class_names: List[str] = None
+) -> plt.Figure:
+    """Plot confusion matrix heatmap.
+    
+    Parameters
+    ----------
+    y_true : np.ndarray
+        Ground truth labels
+    y_pred : np.ndarray
+        Predicted labels
+    output_path : str
+        Path to save figure
+    class_names : List[str] or None
+        Class names for labels
+    
+    Returns
+    -------
+    plt.Figure
+        Matplotlib figure
+    """
+    if class_names is None:
+        class_names = ['Background', 'Building']
+    
+    # Compute confusion matrix
+    y_true_flat = (y_true > 0.5).astype(int).flatten()
+    y_pred_flat = (y_pred > 0.5).astype(int).flatten()
+    
+    from sklearn.metrics import confusion_matrix
+    cm = confusion_matrix(y_true_flat, y_pred_flat)
+    
+    # Normalize
+    cm_norm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+    
+    # Plot
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.heatmap(cm_norm, annot=True, fmt='.2f', cmap='Blues',
+                xticklabels=class_names, yticklabels=class_names, ax=ax)
+    ax.set_xlabel('Predicted', fontsize=12)
+    ax.set_ylabel('True', fontsize=12)
+    ax.set_title('Confusion Matrix', fontsize=14, fontweight='bold')
+    
+    plt.tight_layout()
+    
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=300, bbox_inches='tight')
+    
+    return fig
+
+
+def save_qualitative_predictions(
+    model: keras.Model,
+    dataset: Any,
+    output_dir: str,
+    num_samples: int = 10
+) -> List[str]:
+    """Save qualitative prediction visualizations.
+    
+    Parameters
+    ----------
+    model : keras.Model
+        Model to use for predictions
+    dataset : Any
+        Dataset with images and masks
+    output_dir : str
+        Directory to save visualizations
+    num_samples : int
+        Number of samples to visualize
+    
+    Returns
+    -------
+    List[str]
+        List of saved file paths
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    saved_paths = []
+    
+    for batch_idx in range(min(num_samples, len(dataset))):
+        x_batch, y_batch = dataset[batch_idx]
+        y_pred = model.predict(x_batch, verbose=0)
+        
+        for i in range(min(4, len(x_batch))):  # Max 4 per batch
+            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+            
+            # Input image
+            axes[0].imshow(np.clip(x_batch[i], 0, 1))
+            axes[0].set_title('Input Image')
+            axes[0].axis('off')
+            
+            # Ground truth
+            axes[1].imshow(y_batch[i].squeeze(), cmap='gray')
+            axes[1].set_title('Ground Truth')
+            axes[1].axis('off')
+            
+            # Prediction
+            axes[2].imshow(y_pred[i].squeeze(), cmap='gray', vmin=0, vmax=1)
+            axes[2].set_title('Prediction')
+            axes[2].axis('off')
+            
+            plt.tight_layout()
+            
+            path = os.path.join(output_dir, f'sample_{batch_idx}_{i}.png')
+            fig.savefig(path, dpi=200, bbox_inches='tight')
+            plt.close(fig)
+            
+            saved_paths.append(path)
+    
+    logger.info(f"Saved {len(saved_paths)} qualitative prediction images")
+    
+    return saved_paths
+
+
+==== END FILE ====
+---- FILE: Codes/01/src/objectives.py
+
+"""Objective registry for multi-objective optimization experiments."""
+
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Iterable, List, Optional
+
+
+ObjectiveGetter = Callable[[Dict[str, Any]], float]
+
+
+def _normalize_objective_name(name: str) -> str:
+    return name.lower().replace("_", "").replace("-", "").strip()
+
+
+@dataclass(frozen=True)
+class ObjectiveSpec:
+    """Definition of an optimization objective."""
+
+    name: str
+    direction: str
+    getter: ObjectiveGetter
+    aliases: tuple[str, ...] = ()
+    description: str = ""
+
+    def extract(self, result: Dict[str, Any]) -> float:
+        return float(self.getter(result))
+
+    @property
+    def minimize(self) -> bool:
+        return self.direction.lower() == "min"
+
+    def to_minimization_value(self, result: Dict[str, Any]) -> float:
+        value = self.extract(result)
+        return value if self.minimize else -value
+
+
+_OBJECTIVE_REGISTRY: Dict[str, ObjectiveSpec] = {}
+
+
+def register_objective(
+    name: str,
+    getter: ObjectiveGetter,
+    direction: str,
+    aliases: Optional[Iterable[str]] = None,
+    description: str = "",
+    overwrite: bool = False,
+) -> ObjectiveSpec:
+    """Register a new optimization objective."""
+    normalized_names = [_normalize_objective_name(name)]
+    if aliases:
+        normalized_names.extend(_normalize_objective_name(alias) for alias in aliases)
+
+    if not overwrite:
+        for registry_name in normalized_names:
+            if registry_name in _OBJECTIVE_REGISTRY:
+                raise ValueError(f"Objective '{name}' is already registered")
+
+    spec = ObjectiveSpec(
+        name=name,
+        direction=direction,
+        getter=getter,
+        aliases=tuple(aliases or ()),
+        description=description,
+    )
+    for registry_name in normalized_names:
+        _OBJECTIVE_REGISTRY[registry_name] = spec
+    return spec
+
+
+def get_objective_spec(name: str) -> ObjectiveSpec:
+    """Return a registered objective definition."""
+    normalized_name = _normalize_objective_name(name)
+    if normalized_name not in _OBJECTIVE_REGISTRY:
+        available = ", ".join(sorted(list_objectives()))
+        raise KeyError(f"Unknown objective '{name}'. Available: {available}")
+    return _OBJECTIVE_REGISTRY[normalized_name]
+
+
+def resolve_objective_specs(names: Optional[Iterable[str]] = None) -> List[ObjectiveSpec]:
+    """Resolve objective names into ordered objective specs."""
+    if names is None:
+        names = ["iou", "f1_score", "param_count", "flops", "inference_time"]
+
+    resolved: List[ObjectiveSpec] = []
+    seen = set()
+    for name in names:
+        spec = get_objective_spec(name)
+        if spec.name not in seen:
+            resolved.append(spec)
+            seen.add(spec.name)
+    return resolved
+
+
+def list_objectives() -> List[str]:
+    """List canonical objective names."""
+    canonical_names = {spec.name for spec in _OBJECTIVE_REGISTRY.values()}
+    return sorted(canonical_names)
+
+
+def objective_directions(names: Iterable[str]) -> List[bool]:
+    """Return whether each objective should be minimized."""
+    return [get_objective_spec(name).minimize for name in names]
+
+
+def _get_nested(result: Dict[str, Any], *keys: str, default: float = 0.0) -> float:
+    for key in keys:
+        if key in result and result[key] is not None:
+            return float(result[key])
+    summary = result.get("summary", {})
+    for key in keys:
+        if key in summary and summary[key] is not None:
+            return float(summary[key])
+    history = summary.get("history", {})
+    for key in keys:
+        if key in history and history[key]:
+            return float(history[key][-1])
+    return float(default)
+
+
+def _register_builtin_objectives():
+    register_objective(
+        "iou",
+        lambda result: _get_nested(result, "iou", "final_val_iou", "val_iou_score"),
+        direction="max",
+        aliases=["iou_score"],
+        description="Validation intersection-over-union.",
+    )
+    register_objective(
+        "f1_score",
+        lambda result: _get_nested(result, "f1_score", "final_val_dice", "val_dice_score"),
+        direction="max",
+        aliases=["dice", "dice_score"],
+        description="Validation Dice/F1 score.",
+    )
+    register_objective(
+        "precision",
+        lambda result: _get_nested(result, "precision", "final_val_precision", "val_precision_score"),
+        direction="max",
+        description="Validation precision.",
+    )
+    register_objective(
+        "recall",
+        lambda result: _get_nested(result, "recall", "final_val_recall", "val_recall_score"),
+        direction="max",
+        description="Validation recall.",
+    )
+    register_objective(
+        "accuracy",
+        lambda result: _get_nested(result, "accuracy", "final_val_accuracy", "val_pixel_accuracy", "val_pixel_accuracy"),
+        direction="max",
+        aliases=["pixel_accuracy"],
+        description="Validation accuracy / pixel accuracy.",
+    )
+    register_objective(
+        "boundary_iou",
+        lambda result: _get_nested(result, "boundary_iou", "final_val_boundary_iou", "val_boundary_iou"),
+        direction="max",
+        description="Validation boundary IoU.",
+    )
+    register_objective(
+        "boundary_f1",
+        lambda result: _get_nested(result, "boundary_f1", "final_val_boundary_f1", "val_boundary_f1"),
+        direction="max",
+        description="Validation boundary F1.",
+    )
+    register_objective(
+        "param_count",
+        lambda result: _get_nested(result, "param_count", default=result.get("model_info", {}).get("total_params", 0.0)),
+        direction="min",
+        aliases=["params"],
+        description="Number of model parameters.",
+    )
+    register_objective(
+        "flops",
+        lambda result: _get_nested(result, "flops"),
+        direction="min",
+        description="Estimated floating-point operations.",
+    )
+    register_objective(
+        "inference_time",
+        lambda result: _get_nested(result, "inference_time"),
+        direction="min",
+        aliases=["latency"],
+        description="Mean inference latency in milliseconds.",
+    )
+    register_objective(
+        "train_time_seconds",
+        lambda result: _get_nested(result, "train_time_seconds"),
+        direction="min",
+        description="Training runtime in seconds.",
+    )
+
+
+_register_builtin_objectives()
+
+
+
+==== END FILE ====
+---- FILE: Codes/01/src/optimize.py
+
+"""Multi-objective optimization using NSGA-II.
+
+This module implements multi-objective optimization for building footprint
+segmentation using the NSGA-II algorithm from pymoo. It searches the
+architecture-hyperparameter space to find Pareto-optimal trade-offs between
+accuracy, model complexity, and inference time.
+"""
+
+import os
+import logging
+import numpy as np
+from typing import Dict, Any, List, Tuple, Optional
+from dataclasses import dataclass
+import json
+
+# Import pymoo for multi-objective optimization
+try:
+    from pymoo.core.problem import Problem
+    from pymoo.algorithms.moo.nsga2 import NSGA2
+    from pymoo.optimize import minimize
+    from pymoo.visualization.scatter import Scatter
+    from pymoo.indicators.hv import Hypervolume
+    PYMOO_AVAILABLE = True
+except ImportError:
+    PYMOO_AVAILABLE = False
+    logging.warning("pymoo not installed. NSGA-II optimization will not be available.")
+    Problem = object
+    NSGA2 = None
+    minimize = None
+    Scatter = None
+    Hypervolume = None
+
+import tensorflow as tf
+from tensorflow import keras
+
+from config.config_manager import ExperimentConfig
+from models.model_factory import build_model, get_model_info, estimate_flops, is_model_configuration_supported, measure_inference_time
+from plugins import load_plugins_from_config
+from src.objectives import ObjectiveSpec, resolve_objective_specs
+from training.trainer import train_from_config
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ObjectiveVector:
+    """Container for dynamic objective values."""
+    specs: List[ObjectiveSpec]
+    values: Dict[str, float]
+
+    def to_array(self) -> np.ndarray:
+        return np.array([spec.to_minimization_value(self.values) for spec in self.specs], dtype=float)
+
+    def to_dict(self) -> Dict[str, float]:
+        return dict(self.values)
+
+
+class SegmentationProblem(Problem):
+    """Multi-objective optimization problem for segmentation.
+    
+    This class defines the optimization problem for finding Pareto-optimal
+    segmentation models. Each solution represents a model configuration,
+    and objectives include accuracy, complexity, and speed.
+    
+    Parameters
+    ----------
+    config_space : List[ExperimentConfig]
+        List of possible experiment configurations
+    dataset : Any
+        Dataset for evaluation
+    n_objectives : int
+        Number of objectives (default: 5)
+    """
+    
+    def __init__(
+        self,
+        config_space: List[ExperimentConfig],
+        dataset: Any,
+        objective_specs: List[ObjectiveSpec],
+        inference_runs: int = 50,
+        warmup_runs: int = 10,
+        **kwargs
+    ):
+        self.config_space = config_space
+        self.dataset = dataset
+        self.objective_specs = objective_specs
+        self.inference_runs = inference_runs
+        self.warmup_runs = warmup_runs
+        self.n_configs = len(config_space)
+        self.evaluation_cache: Dict[str, ObjectiveVector] = {}
+        
+        super().__init__(
+            n_var=1,  # Single variable: index into config space
+            n_obj=len(objective_specs),
+            n_constr=0,
+            xl=0,  # Lower bound: index 0
+            xu=self.n_configs - 1,  # Upper bound: last index
+            vtype=int,  # Integer variables
+            **kwargs
+        )
+    
+    def _evaluate(self, x: np.ndarray, out: Dict, *args, **kwargs):
+        """Evaluate a set of solutions.
+        
+        Parameters
+        ----------
+        x : np.ndarray
+            Array of solution indices
+        out : Dict
+            Output dictionary for objective values
+        """
+        objectives = []
+        
+        for idx in x:
+            config = self.config_space[int(idx)]
+            obj_vector = self._evaluate_config(config)
+            objectives.append(obj_vector.to_array())
+        
+        out["F"] = np.array(objectives)
+    
+    def _evaluate_config(self, config: ExperimentConfig) -> ObjectiveVector:
+        """Evaluate a single configuration.
+        
+        Parameters
+        ----------
+        config : ExperimentConfig
+            Configuration to evaluate
+        
+        Returns
+        -------
+        ObjectiveVector
+            Objective values for this configuration
+        """
+        # Check cache
+        if config.experiment_id in self.evaluation_cache:
+            logger.info(f"Using cached evaluation for {config.experiment_id}")
+            return self.evaluation_cache[config.experiment_id]
+        
+        logger.info(f"Evaluating configuration: {config.experiment_id}")
+        
+        try:
+            # Build model
+            model = build_model(
+                architecture=config.architecture,
+                encoder=config.encoder,
+                encoder_weights=config.encoder_weights,
+                input_shape=(config.tile_size, config.tile_size, 3),
+                num_classes=1,
+            )
+            
+            # Get model complexity metrics
+            model_info = get_model_info(model)
+            param_count = model_info['total_params']
+            flops = estimate_flops(model)
+            
+            # Measure inference time
+            timing = measure_inference_time(
+                model,
+                input_shape=(1, config.tile_size, config.tile_size, 3),
+                num_runs=self.inference_runs,
+                warmup_runs=self.warmup_runs,
+            )
+            inference_time = timing['mean_ms']
+            
+            # Evaluate using real training/validation instead of random placeholders.
+            eval_output_dir = None
+            if isinstance(self.dataset, dict):
+                eval_output_dir = self.dataset.get('output_dirs', {}).get('optimization')
+            result = evaluate_experiment_config(config, self.dataset, output_dir=eval_output_dir)
+            result['param_count'] = param_count
+            result['flops'] = flops
+            result['inference_time'] = inference_time
+
+            obj_vector = ObjectiveVector(
+                specs=self.objective_specs,
+                values={spec.name: spec.extract(result) for spec in self.objective_specs},
+            )
+            
+            # Cache result
+            self.evaluation_cache[config.experiment_id] = obj_vector
+            
+            # Clean up
+            del model
+            tf.keras.backend.clear_session()
+            
+            return obj_vector
+            
+        except Exception as e:
+            logger.error(f"Error evaluating {config.experiment_id}: {e}")
+            # Return worst possible values
+            return ObjectiveVector(
+                specs=self.objective_specs,
+                values={
+                    spec.name: (1e12 if spec.minimize else 0.0)
+                    for spec in self.objective_specs
+                },
+            )
+    
+def build_training_config(
+    experiment: ExperimentConfig,
+    root_config: Dict[str, Any],
+    epoch_override: Optional[int] = None
+) -> Dict[str, Any]:
+    """Flatten experiment and root config into the trainer input format."""
+    dataset_cfg = root_config.get('dataset', {})
+    models_cfg = root_config.get('models', {})
+    training_cfg = root_config.get('training', {})
+
+    train_config = experiment.to_dict()
+    train_config.update({
+        'rgb_path': dataset_cfg.get('rgb_path', 'datasets/RGB'),
+        'mask_path': dataset_cfg.get('mask_path', 'datasets/Mask'),
+        'train_val_test_split': dataset_cfg.get('train_val_test_split', [0.7, 0.15, 0.15]),
+        'deep_supervision': models_cfg.get('deep_supervision', False),
+        'num_classes': models_cfg.get('num_classes', 1),
+        'early_stopping': training_cfg.get('early_stopping', {'enabled': True, 'patience': 10}),
+        'scheduler_factor': training_cfg.get('scheduler_factor', 0.5),
+        'scheduler_patience': training_cfg.get('scheduler_patience', 5),
+    })
+    if epoch_override is not None:
+        train_config['epochs'] = epoch_override
+    return train_config
+
+
+def evaluate_experiment_config(
+    experiment: ExperimentConfig,
+    root_config: Dict[str, Any],
+    output_dir: Optional[str] = None,
+    epoch_override: Optional[int] = None
+) -> Dict[str, Any]:
+    """Train/evaluate a configuration and return real validation metrics."""
+    train_config = build_training_config(
+        experiment,
+        root_config,
+        epoch_override=epoch_override,
+    )
+    summary = train_from_config(
+        train_config,
+        output_dir=output_dir or "outputs/optimization",
+        verbose=0,
+        resume=False,
+        auto_batch_size=False,
+    )
+    result = {
+        'experiment_id': experiment.experiment_id,
+        'architecture': experiment.architecture,
+        'encoder': experiment.encoder,
+        'loss_function': experiment.loss_function,
+        'learning_rate': experiment.learning_rate,
+        'batch_size': experiment.batch_size,
+        'epochs': experiment.epochs,
+        'seed': experiment.seed,
+        'tile_size': experiment.tile_size,
+        'summary': summary,
+        'summary_path': os.path.join(output_dir or "outputs/optimization", experiment.experiment_id, "summary.json"),
+        'iou': summary.get('final_val_iou', 0.0) or 0.0,
+        'f1_score': summary.get('final_val_dice', 0.0) or 0.0,
+        'precision': summary.get('final_val_precision', summary.get('final_val_precision_score', 0.0)) or 0.0,
+        'recall': summary.get('final_val_recall', summary.get('final_val_recall_score', 0.0)) or 0.0,
+        'accuracy': summary.get('final_val_accuracy', summary.get('final_val_pixel_accuracy', 0.0)) or 0.0,
+        'boundary_iou': summary.get('final_val_boundary_iou', 0.0) or 0.0,
+        'boundary_f1': summary.get('final_val_boundary_f1', 0.0) or 0.0,
+        'train_time_seconds': summary.get('train_time_seconds', 0.0) or 0.0,
+        'memory_footprint_mb': summary.get('memory_footprint_mb', 0.0) or 0.0,
+    }
+    return result
+
+
+def filter_supported_configs(configs: List[ExperimentConfig]) -> List[ExperimentConfig]:
+    """Drop configurations that are known to be unsupported in the current env."""
+    filtered = []
+    for config in configs:
+        supported, reason = is_model_configuration_supported(
+            config.architecture,
+            input_shape=(config.tile_size, config.tile_size, 3),
+        )
+        if not supported:
+            logger.warning("Skipping %s because %s", config.experiment_id, reason)
+            continue
+        filtered.append(config)
+    return filtered
+
+
+def run_nsga2_optimization(
+    config_space: List[ExperimentConfig],
+    dataset: Any,
+    objective_specs: List[ObjectiveSpec],
+    population_size: int = 50,
+    n_generations: int = 100,
+    seed: int = 42,
+    output_dir: str = "outputs/optimization",
+    inference_runs: int = 50,
+    warmup_runs: int = 10,
+) -> Dict[str, Any]:
+    """Run NSGA-II optimization on the configuration space.
+    
+    Parameters
+    ----------
+    config_space : List[ExperimentConfig]
+        List of possible configurations
+    dataset : Any
+        Dataset for evaluation
+    population_size : int
+        Population size for NSGA-II
+    n_generations : int
+        Number of generations
+    seed : int
+        Random seed
+    output_dir : str
+        Directory to save results
+    
+    Returns
+    -------
+    Dict[str, Any]
+        Optimization results including Pareto front
+    """
+    if not PYMOO_AVAILABLE:
+        raise ImportError("pymoo is required for NSGA-II optimization. "
+                         "Install with: pip install pymoo")
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    logger.info(f"Starting NSGA-II optimization")
+    logger.info(f"Configuration space size: {len(config_space)}")
+    logger.info(f"Population size: {population_size}")
+    logger.info(f"Generations: {n_generations}")
+    
+    # Define problem
+    problem = SegmentationProblem(
+        config_space=config_space,
+        dataset=dataset,
+        objective_specs=objective_specs,
+        inference_runs=inference_runs,
+        warmup_runs=warmup_runs,
+    )
+    
+    # Configure algorithm
+    algorithm = NSGA2(
+        pop_size=population_size,
+        seed=seed,
+        eliminate_duplicates=True
+    )
+    
+    # Run optimization
+    res = minimize(
+        problem,
+        algorithm,
+        ('n_gen', n_generations),
+        seed=seed,
+        verbose=True,
+        save_history=True
+    )
+    
+    # Extract Pareto front
+    pareto_front = res.F
+    pareto_configs = [config_space[int(res.X[i])] for i in range(len(res.X))]
+    
+    # Calculate hypervolume
+    ref_point = []
+    for spec in objective_specs:
+        observed = pareto_front[:, len(ref_point)]
+        ref_point.append(float(np.max(observed) * 1.05 + 1e-9))
+    ref_point = np.array(ref_point, dtype=float)
+    hv = Hypervolume(ref_point=ref_point)
+    hypervolume = hv.do(pareto_front)
+    
+    # Save results
+    results = {
+        'pareto_front': pareto_front.tolist(),
+        'pareto_config_ids': [c.experiment_id for c in pareto_configs],
+        'objective_names': [spec.name for spec in objective_specs],
+        'hypervolume': float(hypervolume),
+        'n_evaluations': len(problem.evaluation_cache),
+        'config_space_size': len(config_space),
+    }
+    
+    results_path = os.path.join(output_dir, 'nsga2_results.json')
+    with open(results_path, 'w') as f:
+        json.dump(results, f, indent=2)
+    
+    logger.info(f"Optimization complete. Hypervolume: {hypervolume:.4f}")
+    logger.info(f"Results saved to {results_path}")
+    
+    return results
+
+
+def extract_pareto_front(
+    results: List[Dict[str, Any]],
+    objectives: List[str] = ['iou', 'f1_score', 'param_count', 'flops', 'inference_time']
+) -> List[Dict[str, Any]]:
+    """Extract Pareto front from a list of results.
+    
+    Parameters
+    ----------
+    results : List[Dict[str, Any]]
+        List of experiment results
+    objectives : List[str]
+        Names of objectives to consider
+    
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Pareto-optimal solutions
+    """
+    if not results:
+        return []
+    
+    # Convert to objective vectors
+    # For minimization: negate accuracy metrics (iou, f1)
+    obj_matrix = []
+    objective_specs = resolve_objective_specs(objectives)
+    for r in results:
+        vec = [spec.to_minimization_value(r) for spec in objective_specs]
+        obj_matrix.append(vec)
+    
+    obj_matrix = np.array(obj_matrix)
+    
+    # Find non-dominated solutions
+    pareto_mask = np.ones(len(obj_matrix), dtype=bool)
+    for i, vec in enumerate(obj_matrix):
+        if pareto_mask[i]:
+            # Check if any other solution dominates this one
+            for j, other in enumerate(obj_matrix):
+                if i != j and pareto_mask[j]:
+                    # Check if other dominates vec
+                    if np.all(other <= vec) and np.any(other < vec):
+                        pareto_mask[i] = False
+                        break
+    
+    pareto_results = [results[i] for i in range(len(results)) if pareto_mask[i]]
+    
+    logger.info(f"Extracted {len(pareto_results)} Pareto-optimal solutions from {len(results)} total")
+    
+    return pareto_results
+
+
+def grid_search_optimization(
+    config_space: List[ExperimentConfig],
+    dataset: Any,
+    output_dir: str = "outputs/optimization",
+    max_configs: Optional[int] = None,
+    epoch_override: Optional[int] = None,
+    inference_runs: int = 50,
+    warmup_runs: int = 10,
+    objective_specs: Optional[List[ObjectiveSpec]] = None,
+) -> List[Dict[str, Any]]:
+    """Run exhaustive grid search over configuration space.
+    
+    Parameters
+    ----------
+    config_space : List[ExperimentConfig]
+        List of configurations to evaluate
+    dataset : Any
+        Dataset for evaluation
+    output_dir : str
+        Directory to save results
+    max_configs : int or None
+        Maximum number of configurations to evaluate (None for all)
+    
+    Returns
+    -------
+    List[Dict[str, Any]]
+        List of evaluation results
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    configs_to_eval = config_space[:max_configs] if max_configs else config_space
+    
+    logger.info(f"Starting grid search over {len(configs_to_eval)} configurations")
+    
+    results = []
+    objective_specs = objective_specs or resolve_objective_specs()
+    
+    for i, config in enumerate(configs_to_eval):
+        logger.info(f"Evaluating configuration {i+1}/{len(configs_to_eval)}: {config.experiment_id}")
+        
+        try:
+            # Build and evaluate model
+            model = build_model(
+                architecture=config.architecture,
+                encoder=config.encoder,
+                encoder_weights=config.encoder_weights,
+                input_shape=(config.tile_size, config.tile_size, 3),
+                num_classes=1,
+            )
+            
+            # Get complexity metrics
+            model_info = get_model_info(model)
+            flops = estimate_flops(model)
+            timing = measure_inference_time(
+                model,
+                input_shape=(1, config.tile_size, config.tile_size, 3),
+                num_runs=inference_runs,
+                warmup_runs=warmup_runs,
+            )
+            
+            eval_result = evaluate_experiment_config(
+                config,
+                dataset,
+                output_dir=output_dir,
+                epoch_override=epoch_override,
+            )
+            result = dict(eval_result)
+            result.update({
+                'param_count': model_info['total_params'],
+                'trainable_params': model_info['trainable_params'],
+                'non_trainable_params': model_info['non_trainable_params'],
+                'flops': flops,
+                'inference_time': timing['mean_ms'],
+                'inference_time_std': timing['std_ms'],
+                'model_info': model_info,
+                'timing': timing,
+                'train_summary_path': os.path.join(output_dir, config.experiment_id, 'summary.json'),
+            })
+            result['objectives'] = {
+                spec.name: spec.extract(result)
+                for spec in objective_specs
+            }
+            
+            results.append(result)
+            
+            # Clean up
+            del model
+            tf.keras.backend.clear_session()
+            
+        except Exception as e:
+            logger.error(f"Error evaluating {config.experiment_id}: {e}")
+    
+    # Save results
+    import pandas as pd
+    df = pd.DataFrame(results)
+    results_path = os.path.join(output_dir, 'grid_search_results.csv')
+    df.to_csv(results_path, index=False)
+    
+    logger.info(f"Grid search complete. Results saved to {results_path}")
+    
+    return results
+
+
+def run_moo_experiment(
+    experiment_config: Dict[str, Any],
+    mode: str = 'full'
+) -> Dict[str, Any]:
+    """Run multi-objective optimization experiment.
+    
+    Parameters
+    ----------
+    experiment_config : Dict[str, Any]
+        Experiment configuration
+    mode : str
+        'full' for complete grid, 'quick' for subset
+    
+    Returns
+    -------
+    Dict[str, Any]
+        Experiment results
+    """
+    from config.config_manager import ConfigManager
+    
+    # Create config manager
+    config_manager = ConfigManager(experiment_config.get('config_path', 'config.yaml'))
+    load_plugins_from_config(config_manager.config)
+    
+    # Get configurations
+    configs = filter_supported_configs(config_manager.get_experiment_configs(mode=mode))
+    
+    # Get MOO configuration
+    moo_config = experiment_config.get('multi_objective', {})
+    objective_specs = resolve_objective_specs(moo_config.get('objectives'))
+    optimization_method = moo_config.get('optimization_method', 'grid_search')
+    
+    output_dirs = experiment_config.get('output_dirs', {})
+    opt_output_dir = output_dirs.get('optimization', 'outputs/optimization')
+    quick_mode = mode == 'quick'
+    inference_runs = moo_config.get('quick_inference_runs', 5) if quick_mode else moo_config.get('inference_runs', 50)
+    warmup_runs = moo_config.get('quick_warmup_runs', 2) if quick_mode else moo_config.get('warmup_runs', 10)
+    
+    if optimization_method == 'NSGA-II' and PYMOO_AVAILABLE:
+        results = run_nsga2_optimization(
+            config_space=configs,
+            dataset=experiment_config,
+            objective_specs=objective_specs,
+            population_size=moo_config.get('population_size', 50),
+            n_generations=moo_config.get('generations', 100),
+            output_dir=opt_output_dir,
+            inference_runs=inference_runs,
+            warmup_runs=warmup_runs,
+        )
+    else:
+        # Default to grid search
+        max_configs = moo_config.get('quick_max_configs', 4) if quick_mode else None
+        epoch_override = moo_config.get('evaluation_epochs')
+        if epoch_override is None and quick_mode:
+            epoch_override = 3
+        results = grid_search_optimization(
+            config_space=configs,
+            dataset=experiment_config,
+            output_dir=opt_output_dir,
+            max_configs=max_configs,
+            epoch_override=epoch_override,
+            inference_runs=inference_runs,
+            warmup_runs=warmup_runs,
+            objective_specs=objective_specs,
+        )
+    
+    return results
+
+
+==== END FILE ====
+---- FILE: Codes/01/src/pareto.py
+
+"""Pareto front extraction and visualization.
+
+This module provides tools for extracting Pareto-optimal solutions from
+multi-objective optimization results and generating publication-quality
+visualizations.
+"""
+
+import os
+import logging
+from typing import Dict, Any, List, Tuple, Optional
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend
+from matplotlib.patches import Patch
+import seaborn as sns
+from .objectives import resolve_objective_specs
+
+# Set publication style
+plt.style.use('seaborn-v0_8-paper')
+sns.set_palette("husl")
+
+logger = logging.getLogger(__name__)
+
+
+def is_pareto_dominated(
+    point: np.ndarray,
+    others: np.ndarray,
+    minimize: List[bool] = None
+) -> bool:
+    """Check if a point is Pareto dominated by any other point.
+    
+    Parameters
+    ----------
+    point : np.ndarray
+        The point to check (shape: [n_objectives])
+    others : np.ndarray
+        Other points to compare against (shape: [n_points, n_objectives])
+    minimize : List[bool] or None
+        For each objective, True if minimizing, False if maximizing.
+        If None, assumes all objectives are minimized.
+    
+    Returns
+    -------
+    bool
+        True if point is dominated by at least one other point
+    """
+    if minimize is None:
+        minimize = [True] * len(point)
+    
+    # Adjust for maximization objectives
+    point_adj = point.copy()
+    others_adj = others.copy()
+    for i, min_obj in enumerate(minimize):
+        if not min_obj:
+            point_adj[i] = -point[i]
+            others_adj[:, i] = -others[:, i]
+    
+    # Check if any point dominates
+    for other in others_adj:
+        if np.all(other <= point_adj) and np.any(other < point_adj):
+            return True
+    
+    return False
+
+
+def extract_pareto_front(
+    results: List[Dict[str, Any]],
+    objectives: List[str] = None,
+    minimize: List[bool] = None
+) -> Tuple[List[Dict[str, Any]], np.ndarray]:
+    """Extract Pareto-optimal solutions from results.
+    
+    Parameters
+    ----------
+    results : List[Dict[str, Any]]
+        List of experiment results
+    objectives : List[str] or None
+        Names of objectives to consider. If None, uses all available.
+    minimize : List[bool] or None
+        For each objective, True if minimizing, False if maximizing.
+        If None, assumes accuracy metrics should be maximized.
+    
+    Returns
+    -------
+    Tuple[List[Dict[str, Any]], np.ndarray]
+        Pareto-optimal results and their objective values
+    """
+    if not results:
+        logger.warning("No results provided for Pareto extraction")
+        return [], np.array([])
+    
+    # Determine objectives
+    if objectives is None:
+        objectives = ['iou', 'f1_score', 'param_count', 'flops', 'inference_time']
+        objectives = [obj for obj in objectives if obj in results[0] or any(obj == key for key in results[0].get('objectives', {}))]
+    
+    if minimize is None:
+        minimize = [spec.minimize for spec in resolve_objective_specs(objectives)]
+    
+    logger.info(f"Extracting Pareto front for objectives: {objectives}")
+    
+    # Extract objective values
+    obj_matrix = []
+    valid_results = []
+    
+    for result in results:
+        try:
+            vec = []
+            for obj in objectives:
+                val = result.get(obj, result.get('objectives', {}).get(obj, 0))
+                # For maximization objectives, negate
+                if not minimize[objectives.index(obj)]:
+                    val = -val
+                vec.append(val)
+            obj_matrix.append(vec)
+            valid_results.append(result)
+        except Exception as e:
+            logger.warning(f"Skipping result due to error: {e}")
+    
+    if not obj_matrix:
+        logger.warning("No valid results for Pareto extraction")
+        return [], np.array([])
+    
+    obj_matrix = np.array(obj_matrix)
+    
+    # Find non-dominated solutions
+    pareto_indices = []
+    for i in range(len(obj_matrix)):
+        others = np.delete(obj_matrix, i, axis=0)
+        if not is_pareto_dominated(obj_matrix[i], others, minimize=[True]*len(objectives)):
+            pareto_indices.append(i)
+    
+    pareto_results = [valid_results[i] for i in pareto_indices]
+    pareto_values = obj_matrix[pareto_indices]
+    
+    # Restore original values (undo negation)
+    for i, obj in enumerate(objectives):
+        if not minimize[i]:
+            pareto_values[:, i] = -pareto_values[:, i]
+    
+    logger.info(f"Extracted {len(pareto_results)} Pareto-optimal solutions from {len(results)} total")
+    
+    return pareto_results, pareto_values
+
+
+def plot_pareto_front_2d(
+    results: List[Dict[str, Any]],
+    obj1: str,
+    obj2: str,
+    minimize1: bool = True,
+    minimize2: bool = True,
+    color_by: str = None,
+    output_path: str = None,
+    figsize: Tuple[int, int] = (10, 8),
+    title: str = None
+) -> plt.Figure:
+    """Create 2D Pareto front plot.
+    
+    Parameters
+    ----------
+    results : List[Dict[str, Any]]
+        Experiment results
+    obj1 : str
+        First objective (x-axis)
+    obj2 : str
+        Second objective (y-axis)
+    minimize1 : bool
+        Whether first objective should be minimized
+    minimize2 : bool
+        Whether second objective should be minimized
+    color_by : str or None
+        Attribute to color points by
+    output_path : str or None
+        Path to save figure
+    figsize : tuple
+        Figure size
+    title : str or None
+        Plot title
+    
+    Returns
+    -------
+    plt.Figure
+        Matplotlib figure
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Extract values
+    x_vals = [r.get(obj1, 0) for r in results]
+    y_vals = [r.get(obj2, 0) for r in results]
+    
+    # Extract Pareto front
+    pareto_results, pareto_vals = extract_pareto_front(
+        results, [obj1, obj2], [minimize1, minimize2]
+    )
+    
+    # Plot all points
+    if color_by and color_by in results[0]:
+        colors = [r.get(color_by, 0) for r in results]
+        if all(isinstance(value, (int, float, np.number)) for value in colors):
+            scatter = ax.scatter(x_vals, y_vals, c=colors, alpha=0.5, s=50, cmap='viridis')
+            plt.colorbar(scatter, ax=ax, label=color_by)
+        else:
+            categories = {value: idx for idx, value in enumerate(sorted({str(value) for value in colors}))}
+            encoded = [categories[str(value)] for value in colors]
+            scatter = ax.scatter(x_vals, y_vals, c=encoded, alpha=0.5, s=50, cmap='tab10')
+            handles = [
+                Patch(color=scatter.cmap(scatter.norm(idx)), label=category)
+                for category, idx in categories.items()
+            ]
+            ax.legend(handles=handles, title=color_by, loc='best', fontsize=10)
+    else:
+        ax.scatter(x_vals, y_vals, alpha=0.5, s=50, label='All solutions', color='lightgray')
+    
+    # Plot Pareto front
+    if len(pareto_results) > 0:
+        pareto_x = pareto_vals[:, 0]
+        pareto_y = pareto_vals[:, 1]
+        
+        # Sort for line plot
+        sort_idx = np.argsort(pareto_x)
+        if not minimize1:
+            sort_idx = sort_idx[::-1]
+        
+        ax.plot(pareto_x[sort_idx], pareto_y[sort_idx], 'r-', linewidth=2, 
+                label='Pareto front', marker='o', markersize=6)
+        ax.scatter(pareto_x, pareto_y, s=100, c='red', marker='*', 
+                  edgecolors='black', linewidths=1, label='Pareto-optimal', zorder=5)
+    
+    # Labels and formatting
+    ax.set_xlabel(obj1.replace('_', ' ').title(), fontsize=12)
+    ax.set_ylabel(obj2.replace('_', ' ').title(), fontsize=12)
+    
+    if title:
+        ax.set_title(title, fontsize=14, fontweight='bold')
+    
+    if not (color_by and color_by in results[0] and not all(isinstance(value, (int, float, np.number)) for value in [r.get(color_by, 0) for r in results])):
+        ax.legend(loc='best', fontsize=10)
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    if output_path:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        fig.savefig(output_path, dpi=300, bbox_inches='tight')
+        logger.info(f"Saved Pareto front plot to {output_path}")
+    
+    return fig
+
+
+def plot_pareto_front_3d(
+    results: List[Dict[str, Any]],
+    obj1: str,
+    obj2: str,
+    obj3: str,
+    minimize: List[bool] = None,
+    output_path: str = None,
+    figsize: Tuple[int, int] = (12, 10),
+    title: str = None
+) -> plt.Figure:
+    """Create 3D Pareto front plot.
+    
+    Parameters
+    ----------
+    results : List[Dict[str, Any]]
+        Experiment results
+    obj1 : str
+        First objective (x-axis)
+    obj2 : str
+        Second objective (y-axis)
+    obj3 : str
+        Third objective (z-axis)
+    minimize : List[bool] or None
+        Whether each objective should be minimized
+    output_path : str or None
+        Path to save figure
+    figsize : tuple
+        Figure size
+    title : str or None
+        Plot title
+    
+    Returns
+    -------
+    plt.Figure
+        Matplotlib figure
+    """
+    from mpl_toolkits.mplot3d import Axes3D
+    
+    fig = plt.figure(figsize=figsize)
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Extract Pareto front
+    objectives = [obj1, obj2, obj3]
+    if minimize is None:
+        minimize = [obj not in ['iou', 'f1_score', 'precision', 'recall', 'accuracy'] 
+                   for obj in objectives]
+    
+    pareto_results, pareto_vals = extract_pareto_front(results, objectives, minimize)
+    
+    # Plot all points
+    x_vals = [r.get(obj1, 0) for r in results]
+    y_vals = [r.get(obj2, 0) for r in results]
+    z_vals = [r.get(obj3, 0) for r in results]
+    
+    ax.scatter(x_vals, y_vals, z_vals, alpha=0.3, s=30, label='All solutions', color='lightgray')
+    
+    # Plot Pareto front
+    if len(pareto_results) > 0:
+        ax.scatter(pareto_vals[:, 0], pareto_vals[:, 1], pareto_vals[:, 2],
+                  s=100, c='red', marker='*', edgecolors='black', linewidths=1,
+                  label='Pareto-optimal', zorder=5)
+    
+    # Labels
+    ax.set_xlabel(obj1.replace('_', ' ').title(), fontsize=11)
+    ax.set_ylabel(obj2.replace('_', ' ').title(), fontsize=11)
+    ax.set_zlabel(obj3.replace('_', ' ').title(), fontsize=11)
+    
+    if title:
+        ax.set_title(title, fontsize=14, fontweight='bold')
+    
+    ax.legend(loc='best', fontsize=10)
+    
+    plt.tight_layout()
+    
+    if output_path:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        fig.savefig(output_path, dpi=300, bbox_inches='tight')
+        logger.info(f"Saved 3D Pareto front plot to {output_path}")
+    
+    return fig
+
+
+def plot_pareto_front(
+    results: List[Dict[str, Any]],
+    output_dir: str,
+    objectives: List[str] = None
+) -> Dict[str, str]:
+    """Generate all Pareto front visualizations.
+    
+    Parameters
+    ----------
+    results : List[Dict[str, Any]]
+        Experiment results
+    output_dir : str
+        Directory to save plots
+    objectives : List[str] or None
+        Objectives to plot. If None, uses defaults.
+    
+    Returns
+    -------
+    Dict[str, str]
+        Dictionary mapping plot names to file paths
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    if objectives is None:
+        if results and results[0].get('objectives'):
+            objectives = list(results[0]['objectives'].keys())
+        else:
+            objectives = ['iou', 'f1_score', 'param_count', 'flops', 'inference_time']
+            objectives = [obj for obj in objectives if any(obj in r for r in results)]
+    
+    plot_paths = {}
+    
+    # Generate 2D plots for key pairs
+    key_pairs = [
+        ('iou', 'param_count', False, True),
+        ('iou', 'inference_time', False, True),
+        ('f1_score', 'param_count', False, True),
+        ('f1_score', 'inference_time', False, True),
+        ('param_count', 'inference_time', True, True),
+    ]
+    
+    for obj1, obj2, min1, min2 in key_pairs:
+        if obj1 in objectives and obj2 in objectives:
+            path = os.path.join(output_dir, f'pareto_{obj1}_vs_{obj2}.png')
+            plot_pareto_front_2d(
+                results, obj1, obj2, min1, min2,
+                color_by='architecture',
+                output_path=path,
+                title=f'Pareto Front: {obj1.replace("_", " ").title()} vs {obj2.replace("_", " ").title()}'
+            )
+            plot_paths[f'{obj1}_vs_{obj2}'] = path
+    
+    # Generate 3D plot if we have enough objectives
+    if len(objectives) >= 3:
+        path = os.path.join(output_dir, 'pareto_3d.png')
+        plot_pareto_front_3d(
+            results, objectives[0], objectives[1], objectives[2],
+            output_path=path,
+            title='3D Pareto Front'
+        )
+        plot_paths['3d'] = path
+    
+    logger.info(f"Generated {len(plot_paths)} Pareto front plots")
+    
+    return plot_paths
+
+
+def plot_objective_space(
+    results: List[Dict[str, Any]],
+    output_path: str,
+    objectives: List[str] = None
+) -> plt.Figure:
+    """Create parallel coordinates plot of objective space.
+    
+    Parameters
+    ----------
+    results : List[Dict[str, Any]]
+        Experiment results
+    output_path : str
+        Path to save figure
+    objectives : List[str] or None
+        Objectives to include
+    
+    Returns
+    -------
+    plt.Figure
+        Matplotlib figure
+    """
+    if objectives is None:
+        objectives = ['iou', 'f1_score', 'param_count', 'flops', 'inference_time']
+        objectives = [obj for obj in objectives if any(obj in r for r in results)]
+    
+    # Normalize values for visualization
+    data = []
+    for r in results:
+        row = []
+        for obj in objectives:
+            val = r.get(obj, 0)
+            # Normalize to [0, 1]
+            vals = [res.get(obj, 0) for res in results]
+            min_val, max_val = min(vals), max(vals)
+            if max_val > min_val:
+                norm_val = (val - min_val) / (max_val - min_val)
+            else:
+                norm_val = 0.5
+            row.append(norm_val)
+        data.append(row)
+    
+    data = np.array(data)
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Plot each solution
+    for i, row in enumerate(data):
+        color = 'blue' if i < len(data) * 0.1 else 'gray'  # Highlight top 10%
+        alpha = 0.8 if i < len(data) * 0.1 else 0.2
+        ax.plot(range(len(objectives)), row, color=color, alpha=alpha, linewidth=1)
+    
+    ax.set_xticks(range(len(objectives)))
+    ax.set_xticklabels([obj.replace('_', ' ').title() for obj in objectives], rotation=45, ha='right')
+    ax.set_ylabel('Normalized Value', fontsize=12)
+    ax.set_title('Objective Space Visualization (Parallel Coordinates)', fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=300, bbox_inches='tight')
+    logger.info(f"Saved objective space plot to {output_path}")
+    
+    return fig
+
+
+def plot_hypervolume_history(
+    history: List[float],
+    output_path: str
+) -> plt.Figure:
+    """Plot hypervolume convergence over generations.
+    
+    Parameters
+    ----------
+    history : List[float]
+        Hypervolume values over generations
+    output_path : str
+        Path to save figure
+    
+    Returns
+    -------
+    plt.Figure
+        Matplotlib figure
+    """
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    generations = range(1, len(history) + 1)
+    ax.plot(generations, history, 'b-', linewidth=2, marker='o', markersize=4)
+    ax.fill_between(generations, history, alpha=0.3)
+    
+    ax.set_xlabel('Generation', fontsize=12)
+    ax.set_ylabel('Hypervolume', fontsize=12)
+    ax.set_title('Hypervolume Convergence', fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=300, bbox_inches='tight')
+    logger.info(f"Saved hypervolume history plot to {output_path}")
+    
+    return fig
+
+
+def generate_pareto_report(
+    pareto_results: List[Dict[str, Any]],
+    output_path: str
+) -> None:
+    """Generate a text report of Pareto-optimal solutions.
+    
+    Parameters
+    ----------
+    pareto_results : List[Dict[str, Any]]
+        Pareto-optimal results
+    output_path : str
+        Path to save report
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    with open(output_path, 'w') as f:
+        f.write("=" * 80 + "\n")
+        f.write("PARETO-OPTIMAL SOLUTIONS REPORT\n")
+        f.write("=" * 80 + "\n\n")
+        
+        f.write(f"Number of Pareto-optimal solutions: {len(pareto_results)}\n\n")
+        
+        for i, result in enumerate(pareto_results, 1):
+            f.write(f"\n{'-' * 80}\n")
+            f.write(f"Solution {i}: {result.get('experiment_id', 'N/A')}\n")
+            f.write(f"{'-' * 80}\n")
+            
+            # Configuration
+            f.write("\nConfiguration:\n")
+            config_keys = ['architecture', 'encoder', 'loss_function', 'optimizer',
+                          'learning_rate', 'batch_size', 'epochs']
+            for key in config_keys:
+                if key in result:
+                    f.write(f"  {key}: {result[key]}\n")
+            
+            # Objectives
+            f.write("\nObjectives:\n")
+            obj_keys = ['iou', 'f1_score', 'precision', 'recall', 'accuracy',
+                       'param_count', 'flops', 'inference_time']
+            for key in obj_keys:
+                if key in result:
+                    val = result[key]
+                    if key in ['param_count']:
+                        f.write(f"  {key}: {val/1e6:.2f}M\n")
+                    elif key in ['flops']:
+                        f.write(f"  {key}: {val/1e9:.2f}G\n")
+                    elif key in ['inference_time']:
+                        f.write(f"  {key}: {val:.2f} ms\n")
+                    else:
+                        f.write(f"  {key}: {val:.4f}\n")
+        
+        f.write("\n" + "=" * 80 + "\n")
+    
+    logger.info(f"Saved Pareto report to {output_path}")
+
+
+==== END FILE ====
+---- FILE: Codes/01/tests/__init__.py
+
+"""Test package for the segmentation framework."""
+
+
+==== END FILE ====
+---- FILE: Codes/01/tests/test_checkpointing.py
+
+"""Checkpoint manager tests."""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+import tensorflow as tf
+
+from optimization.mgda import MGDASolver
+from training.checkpoint_manager import CheckpointManager
+
+
+class TestCheckpointing(unittest.TestCase):
+    """Validate checkpoint save/load behavior."""
+
+    def test_save_and_load_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt = CheckpointManager(Path(tmpdir))
+            model = tf.keras.Sequential(
+                [
+                    tf.keras.layers.Input(shape=(8,)),
+                    tf.keras.layers.Dense(4, activation="relu"),
+                    tf.keras.layers.Dense(1, activation="sigmoid"),
+                ]
+            )
+            optimizer = tf.keras.optimizers.Adam(1e-3)
+            dummy_x = tf.random.uniform((2, 8))
+            dummy_y = tf.random.uniform((2, 1))
+            with tf.GradientTape() as tape:
+                pred = model(dummy_x, training=True)
+                loss = tf.reduce_mean(tf.keras.losses.binary_crossentropy(dummy_y, pred))
+            grads = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(grads, model.trainable_variables))
+
+            solver = MGDASolver()
+            solver.alpha_history.append([0.5, 0.5])
+
+            ckpt.save(
+                model=model,
+                optimizer=optimizer,
+                epoch=3,
+                metrics={"val_iou": 0.7, "val_boundary": 0.2},
+                mgda_solver=solver,
+            )
+            self.assertTrue((Path(tmpdir) / "last_epoch.weights.h5").exists())
+            # self.assertTrue((Path(tmpdir) / "last_epoch.h5").exists())
+            self.assertTrue((Path(tmpdir) / "training_state.pkl").exists())
+
+            model_path, state = ckpt.load_latest()
+            self.assertIsNotNone(model_path)
+            self.assertIsNotNone(state)
+            self.assertEqual(int(state["epoch"]), 3)
+
+            restored = tf.keras.Sequential(
+                [
+                    tf.keras.layers.Input(shape=(8,)),
+                    tf.keras.layers.Dense(4, activation="relu"),
+                    tf.keras.layers.Dense(1, activation="sigmoid"),
+                ]
+            )
+            restored.load_weights(model_path)
+            self.assertEqual(len(restored.weights), len(model.weights))
+            self.assertTrue(isinstance(state.get("optimizer_weights"), list))
+            self.assertTrue(isinstance(state.get("mgda_alpha_history"), list))
+            self.assertAlmostEqual(ckpt.get_best_metric(), 0.7, places=5)
+
+            self.assertTrue(ckpt.has_checkpoint())
+
+    def test_restore_optimizer_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt = CheckpointManager(Path(tmpdir))
+            model = tf.keras.Sequential(
+                [
+                    tf.keras.layers.Input(shape=(8,)),
+                    tf.keras.layers.Dense(4, activation="relu"),
+                    tf.keras.layers.Dense(1, activation="sigmoid"),
+                ]
+            )
+            optimizer = tf.keras.optimizers.Adam(1e-3)
+            dummy_x = tf.random.uniform((2, 8))
+            dummy_y = tf.random.uniform((2, 1))
+            with tf.GradientTape() as tape:
+                pred = model(dummy_x, training=True)
+                loss = tf.reduce_mean(tf.keras.losses.binary_crossentropy(dummy_y, pred))
+            grads = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(grads, model.trainable_variables))
+            ckpt.save(model=model, optimizer=optimizer, epoch=1, metrics={"val_iou": 0.5})
+
+            _, state = ckpt.load_latest()
+            self.assertIsNotNone(state)
+
+            restored_model = tf.keras.Sequential(
+                [
+                    tf.keras.layers.Input(shape=(8,)),
+                    tf.keras.layers.Dense(4, activation="relu"),
+                    tf.keras.layers.Dense(1, activation="sigmoid"),
+                ]
+            )
+            restored_model(tf.random.uniform((1, 8)))
+            restored_optimizer = tf.keras.optimizers.Adam(1e-3)
+            restored = CheckpointManager.restore_optimizer_state(restored_optimizer, state, restored_model)
+            self.assertTrue(restored)
+
+
+
+==== END FILE ====

@@ -1,0 +1,171 @@
+Part 16 of 16
+
+---- FILE: ai_pack_output/part007.txt
+
+Part 8 of 8
+
+---- FILE: Codes/01/visualization/visualization.py
+
+"""Compatibility wrappers around modular visualization functions."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Dict, Iterable, List
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+
+from visualization.boundary_overlay import generate_boundary_overlay as _generate_boundary_overlay
+from visualization.error_maps import generate_error_maps as _generate_error_maps
+from visualization.loss_curves import generate_loss_curves as _generate_loss_curves
+from visualization.pareto_plot import (
+    generate_pareto_2d as _generate_pareto_2d,
+    generate_pareto_3d as _generate_pareto_3d,
+)
+from visualization.prediction_grid import generate_prediction_grid as _generate_prediction_grid
+from visualization.style import save_figure
+from pathlib import Path
+
+
+def save_sample_predictions(
+    output_path: str,
+    images: List[np.ndarray],
+    masks_true: List[np.ndarray],
+    masks_pred: List[np.ndarray],
+    titles: List[str] | None = None,
+) -> str:
+    """Save a simple RGB/GT/Prediction grid for compatibility."""
+    del titles
+    rows = min(len(images), len(masks_true), len(masks_pred))
+    fig, axes = plt.subplots(rows, 3, figsize=(9, 2.8 * rows))
+    if rows == 1:
+        axes = np.expand_dims(axes, axis=0)
+    for idx in range(rows):
+        axes[idx, 0].imshow(np.clip(images[idx], 0.0, 1.0))
+        axes[idx, 0].set_title("RGB")
+        axes[idx, 0].axis("off")
+        axes[idx, 1].imshow(np.squeeze(masks_true[idx]), cmap="gray")
+        axes[idx, 1].set_title("GT")
+        axes[idx, 1].axis("off")
+        axes[idx, 2].imshow(np.squeeze(masks_pred[idx]), cmap="gray")
+        axes[idx, 2].set_title("Pred")
+        axes[idx, 2].axis("off")
+    fig.tight_layout()
+    stem = output_path.rsplit(".", 1)[0]
+    save_figure(fig, stem, formats=("png",))
+    return output_path
+
+
+def save_boundary_overlay(
+    output_path: str,
+    models_dict: Dict[str, tf.keras.Model],
+    dataset: tf.data.Dataset,
+    num_samples: int = 6,
+) -> str:
+    """Compatibility wrapper for boundary overlays."""
+    _generate_boundary_overlay(models_dict, dataset, num_samples=num_samples, save_path=output_path.rsplit(".", 1)[0])
+    return output_path
+
+
+def plot_loss_curves(output_path: str, history: Dict[str, List[float]]) -> str:
+    """Compatibility helper for old signature plot_loss_curves(path, history)."""
+    df = pd.DataFrame(history)
+    if "epoch" not in df.columns:
+        df["epoch"] = np.arange(1, len(df) + 1)
+    temp_csv = output_path + ".tmp.csv"
+    df.to_csv(temp_csv, index=False)
+    _generate_loss_curves({"run": temp_csv}, save_path=output_path.rsplit(".", 1)[0])
+    try:
+        Path(temp_csv).unlink(missing_ok=True)
+    except Exception:
+        pass
+    return output_path
+
+
+def save_pareto_plot(output_path: str, pareto_objectives: Iterable[Iterable[float]], labels: List[str]) -> str:
+    """Compatibility wrapper for Pareto plotting."""
+    points = list(pareto_objectives)
+    if not points:
+        return output_path
+    columns = labels if len(labels) == len(points[0]) else [f"obj_{i}" for i in range(len(points[0]))]
+    df = pd.DataFrame(points, columns=columns)
+    _generate_pareto_2d(
+        results_df=df,
+        pareto_df=df,
+        x_col=columns[0],
+        y_col=columns[1] if len(columns) > 1 else columns[0],
+        save_path=output_path.rsplit(".", 1)[0],
+    )
+    if len(columns) >= 3:
+        _generate_pareto_3d(
+            results_df=df,
+            pareto_df=df,
+            x_col=columns[0],
+            y_col=columns[1],
+            z_col=columns[2],
+            save_path=output_path.rsplit(".", 1)[0] + "_3d",
+        )
+    return output_path
+
+
+def save_error_maps(
+    output_path: str,
+    models_dict: Dict[str, tf.keras.Model],
+    dataset: tf.data.Dataset,
+    num_samples: int = 4,
+) -> str:
+    """Compatibility wrapper for error-map generation."""
+    _generate_error_maps(models_dict, dataset, num_samples=num_samples, save_path=output_path.rsplit(".", 1)[0])
+    return output_path
+
+
+def save_prediction_grid(
+    output_path: str,
+    models_dict: Dict[str, tf.keras.Model],
+    dataset: tf.data.Dataset,
+    num_samples: int = 8,
+) -> str:
+    """Compatibility wrapper for prediction grid generation."""
+    _generate_prediction_grid(models_dict, dataset, num_samples=num_samples, save_path=output_path.rsplit(".", 1)[0])
+    return output_path
+
+
+def create_training_report(
+    summary: Dict[str, Any],
+    output_dir: str,
+    include_plots: bool = True,
+) -> Dict[str, str]:
+    """Create a compact training report compatible with older callers."""
+    import json
+    from pathlib import Path
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    report_files: Dict[str, str] = {}
+
+    summary_path = output_path / "training_report.json"
+    summary_path.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+    report_files["report_json"] = str(summary_path)
+
+    if include_plots and isinstance(summary.get("history"), dict):
+        plot_path = output_path / "loss_curves.png"
+        plot_loss_curves(str(plot_path), summary["history"])
+        report_files["loss_curves"] = str(plot_path)
+
+    return report_files
+
+
+
+==== END FILE ====
+---- FILE: README.md
+
+# Multi-objective-Semantic-Segmentation
+
+
+==== END FILE ====
+
+
+==== END FILE ====

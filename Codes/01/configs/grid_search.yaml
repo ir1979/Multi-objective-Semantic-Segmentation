@@ -1,0 +1,179 @@
+# Grid Search Configuration for Multi-Objective Semantic Segmentation
+# Defines the hyperparameter space for systematic experimentation
+
+project:
+  name: "grid_search_moo"
+  seed: 42
+  deterministic: true
+
+# Grid Search Space Definition
+grid_search:
+  enabled: true
+  # Save checkpoint after each point for resumability
+  auto_checkpoint: true
+  # Number of random seeds to try for each point (for robustness)
+  replicate_points: 1
+  # Whether to generate aggregated results after each batch
+  intermediate_reporting: true
+  
+  # Hyperparameters to search over (Cartesian product)
+  # Each key becomes a configuration variant
+  parameters:
+    
+    # Model Architecture
+    model_architecture:
+      - "unet"
+      - "unetpp"
+    
+    # Optimization Strategy
+    loss_strategy:
+      - "single"
+      - "weighted"
+      - "mgda"
+    
+    # Pixel Loss Configuration
+    pixel_loss_type:
+      - "bce"
+      - "bce_iou"
+      - "dice"
+    
+    # Boundary Loss Weight
+    boundary_loss_weight:
+      - 0.0
+      - 0.3
+      - 0.5
+    
+    # Shape Loss Weight
+    shape_loss_weight:
+      - 0.0
+      - 0.1
+      - 0.2
+    
+    # Learning Rate
+    learning_rate:
+      - 1.0e-4
+      - 5.0e-4
+      - 1.0e-3
+    
+    # Encoder Filters Configuration
+    encoder_filters:
+      - [64, 128, 256, 512, 1024]
+      - [32, 64, 128, 256, 512]
+    
+    # Dropout Rate
+    dropout_rate:
+      - 0.2
+      - 0.3
+      - 0.5
+    
+    # Deep Supervision (only for UNet++)
+    deep_supervision:
+      - false
+      - true
+    
+    # Batch Size
+    batch_size:
+      - 4
+      - 8
+
+  # Constraints to reduce search space (optional)
+  # Applied as filters after grid generation
+  constraints:
+    # Only use deep supervision with UNetPP
+    - if_model_architecture: "unet"
+      then_not_deep_supervision: true
+    
+    # Don't search boundary+shape combos that are both zero
+    - if_boundary_loss_weight: 0.0
+      and_shape_loss_weight: 0.0
+      then_skip: true
+
+  # Point selection strategy
+  selection:
+    # "full": Generate all combinations (Cartesian product)
+    # "random": Randomly sample N points
+    # "latin_hypercube": Latin hypercube sampling
+    strategy: "random"
+    
+    # For random/latin_hypercube: number of points to sample
+    n_points: 50
+    
+    # Random seed for reproducible sampling
+    random_seed: 42
+
+# Data Configuration
+data:
+  rgb_dir: "datasets/RGB"
+  mask_dir: "datasets/Mask"
+  image_size: 256
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+  num_workers: 4
+  prefetch_buffer: 2
+  building_density_bins: 3
+
+# Augmentation Configuration
+augmentation:
+  enabled: true
+  horizontal_flip: true
+  vertical_flip: true
+  random_rotation: true
+  brightness_range: 0.1
+  contrast_range: 0.1
+
+# Training Configuration (can be overridden by grid parameters)
+training:
+  epochs: 10
+  optimizer: "adam"
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 2
+    min_lr: 1.0e-7
+  early_stopping:
+    enabled: true
+    monitor: "val_iou"
+    patience: 5
+    mode: "max"
+    min_delta: 1.0e-4
+  gradient_clip_norm: 1.0
+
+# Checkpointing Configuration
+checkpointing:
+  save_every_n_epochs: 2
+  save_best: true
+  best_metric: "val_iou"
+  save_optimizer: true
+  save_mgda_state: true
+  # For grid search: more frequent checkpointing for recovery
+  auto_resume: true
+  max_resume_attempts: 3
+
+# Logging Configuration
+logging:
+  console_level: "INFO"
+  file_level: "DEBUG"
+  tensorboard: false  # Disable for grid search to reduce I/O
+  csv_logging: true
+  log_gradient_norms: false
+  log_mgda_alphas: true
+  validation_image_interval: 0  # Disable for faster grid search
+
+# Evaluation Configuration
+evaluation:
+  metrics:
+    - "iou"
+    - "dice"
+    - "precision"
+    - "recall"
+    - "boundary_f1"
+
+# Export Configuration
+export:
+  results_dir: "grid_search_results"
+  save_model: true
+  save_predictions: false  # Disable for faster grid search
+  save_figures: true
+  save_tables: true
+  figure_dpi: 150  # Lower DPI for grid search speed
+  paper_output_dir: "grid_search_results/paper_outputs"

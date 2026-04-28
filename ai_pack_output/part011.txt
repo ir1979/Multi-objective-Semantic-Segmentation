@@ -1,0 +1,2031 @@
+Part 12 of 16
+
+---- FILE: ai_pack_output/part003.txt
+
+Part 4 of 8
+
+---- FILE: Codes/01/models/scSEUnet.py
+
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[ ]:
+
+
+import numpy as np
+from tensorflow.keras import backend as K
+from tensorflow.keras.layers import (
+    Activation,
+    Add,
+    BatchNormalization,
+    Concatenate,
+    Conv2D,
+    Dense,
+    Input,
+    Lambda,
+    MaxPooling2D,
+    Multiply,
+    UpSampling2D,
+)
+from tensorflow.keras.models import Model
+
+np.random.seed(101)
+
+def cse_block(prevlayer, prefix):
+    mean = Lambda(lambda xin: K.mean(xin, axis=[1, 2]))(prevlayer)  # H W 求均值
+    # K.int_shape() Returns the shape of tensor or variable as a tuple of int or None entries
+    lin1 = Dense(K.int_shape(prevlayer)[
+                 3] // 2, name=prefix + 'cse_lin1', activation='relu')(mean)
+    lin2 = Dense(K.int_shape(prevlayer)[
+                 3], name=prefix + 'cse_lin2', activation='sigmoid')(lin1)
+    x = Multiply()([prevlayer, lin2])
+    return x
+
+# channel squeeze and spatial excitation
+
+
+def sse_block(prevlayer, prefix):
+    # Bug? Should be 1 here?
+    conv = Conv2D(K.int_shape(prevlayer)[3], (1, 1), padding="same", kernel_initializer="he_normal",
+                  activation='sigmoid', strides=(1, 1),
+                  name=prefix + "_conv")(prevlayer)
+    conv = Multiply(name=prefix + "_mul")([prevlayer, conv])
+    return conv
+
+# concurrent spatial and channel squeeze and channel excitation
+
+
+def csse_block(x, prefix):
+    '''
+    Implementation of Concurrent Spatial and Channel ‘Squeeze & Excitation’ in Fully Convolutional Networks
+    https://arxiv.org/abs/1803.02579
+
+    x = csse_block(x, prefix='csse_block_{}'.format(i))
+    '''
+    cse = cse_block(x, prefix)
+    sse = sse_block(x, prefix)
+    x = Add(name=prefix + "_csse_mul")([cse, sse])
+
+    return x
+
+
+def scSEUnet():
+    nClasses=1
+    input_height=256
+    input_width=256
+    inputs = Input(shape=(input_height, input_width, 3))
+    conv1 = Conv2D(16,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(inputs)
+    conv1 = BatchNormalization()(conv1)
+
+    conv1 = Conv2D(16,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(conv1)
+    conv1 = BatchNormalization()(conv1)
+
+    pool1 = MaxPooling2D(pool_size=(2, 2))(conv1)
+    conv2 = Conv2D(32,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(pool1)
+    conv2 = BatchNormalization()(conv2)
+
+    conv2 = Conv2D(32,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(conv2)
+    conv2 = BatchNormalization()(conv2)
+
+    pool2 = MaxPooling2D(pool_size=(2, 2))(conv2)
+    conv3 = Conv2D(64,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(pool2)
+    conv3 = BatchNormalization()(conv3)
+
+    conv3 = Conv2D(64,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(conv3)
+    conv3 = BatchNormalization()(conv3)
+
+    pool3 = MaxPooling2D(pool_size=(2, 2))(conv3)
+    conv4 = Conv2D(128,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(pool3)
+    conv4 = BatchNormalization()(conv4)
+
+    conv4 = Conv2D(128,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(conv4)
+    conv4 = BatchNormalization()(conv4)
+
+    pool4 = MaxPooling2D(pool_size=(2, 2))(conv4)
+
+    conv5 = Conv2D(256,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(pool4)
+    conv5 = BatchNormalization()(conv5)
+    conv5 = Conv2D(256,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(conv5)
+    conv5 = BatchNormalization()(conv5)
+
+    up6 = Conv2D(128,
+                 2,
+                 activation='relu',
+                 padding='same',
+                 kernel_initializer='he_normal')(UpSampling2D(size=(2,
+                                                                    2))(conv5))
+    up6 = BatchNormalization()(up6)
+
+    merge6 = Concatenate(axis=3)([conv4, up6])
+    conv6 = Conv2D(128,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(merge6)
+    conv6 = BatchNormalization()(conv6)
+
+    conv6 = Conv2D(128,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(conv6)
+    conv6 = BatchNormalization()(conv6)
+
+    up7 = Conv2D(64,
+                 2,
+                 activation='relu',
+                 padding='same',
+                 kernel_initializer='he_normal')(UpSampling2D(size=(2,
+                                                                    2))(conv6))
+    up7 = BatchNormalization()(up7)
+
+    merge7 = Concatenate(axis=3)([conv3, up7])
+    conv7 = Conv2D(64,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(merge7)
+    conv7 = BatchNormalization()(conv7)
+
+    conv7 = Conv2D(64,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(conv7)
+    conv7 = BatchNormalization()(conv7)
+
+    conv7 = csse_block(conv7, prefix="conv7")
+
+    up8 = Conv2D(32,
+                 2,
+                 activation='relu',
+                 padding='same',
+                 kernel_initializer='he_normal')(UpSampling2D(size=(2,
+                                                                    2))(conv7))
+    up8 = BatchNormalization()(up8)
+
+    merge8 = Concatenate(axis=3)([conv2, up8])
+    conv8 = Conv2D(32,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(merge8)
+    conv8 = BatchNormalization()(conv8)
+
+    conv8 = Conv2D(32,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(conv8)
+    conv8 = BatchNormalization()(conv8)
+
+    conv8 = csse_block(conv8, prefix="conv8")
+
+    up9 = Conv2D(16,
+                 2,
+                 activation='relu',
+                 padding='same',
+                 kernel_initializer='he_normal')(UpSampling2D(size=(2,
+                                                                    2))(conv8))
+    up9 = BatchNormalization()(up9)
+
+    merge9 = Concatenate(axis=3)([conv1, up9])
+    conv9 = Conv2D(16,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(merge9)
+    conv9 = BatchNormalization()(conv9)
+
+    conv9 = Conv2D(16,
+                   3,
+                   activation='relu',
+                   padding='same',
+                   kernel_initializer='he_normal')(conv9)
+    conv9 = BatchNormalization()(conv9)
+
+    conv9 = csse_block(conv9, prefix="conv9")
+
+    conv10 = Conv2D(nClasses, (3, 3), padding='same')(conv9)
+    conv10 = BatchNormalization()(conv10)
+    out = Activation('sigmoid')(conv10)
+    model = Model(inputs=inputs, outputs=out, name='scSEUnet')
+    model.summary()
+    
+    return model
+
+
+==== END FILE ====
+---- FILE: Codes/01/models/unet.py
+
+"""U-Net model implementation for building segmentation."""
+
+from __future__ import annotations
+
+from typing import List
+
+import tensorflow as tf
+
+from models.blocks import ConvBlock
+
+
+class UNet(tf.keras.Model):
+    """Standard U-Net architecture."""
+
+    def __init__(
+        self,
+        encoder_filters: List[int] | None = None,
+        dropout_rate: float = 0.3,
+        batch_norm: bool = True,
+        activation: str = "relu",
+        output_activation: str = "sigmoid",
+        name: str = "UNet",
+    ) -> None:
+        super().__init__(name=name)
+        self.encoder_filters = encoder_filters or [64, 128, 256, 512, 1024]
+        if len(self.encoder_filters) != 5:
+            raise ValueError("UNet expects exactly 5 filter values.")
+
+        self.down_blocks = [
+            ConvBlock(
+                filters=f,
+                dropout_rate=dropout_rate if i > 1 else 0.0,
+                use_batch_norm=batch_norm,
+                activation=activation,
+                name=f"encoder_block_{i}",
+            )
+            for i, f in enumerate(self.encoder_filters[:-1])
+        ]
+        self.pools = [tf.keras.layers.MaxPooling2D(pool_size=(2, 2)) for _ in range(4)]
+        self.bottleneck = ConvBlock(
+            filters=self.encoder_filters[-1],
+            dropout_rate=dropout_rate,
+            use_batch_norm=batch_norm,
+            activation=activation,
+            name="bottleneck",
+        )
+
+        decoder_filters = list(reversed(self.encoder_filters[:-1]))
+        self.up_samples = [tf.keras.layers.UpSampling2D(size=(2, 2), interpolation="bilinear") for _ in range(4)]
+        self.decoder_blocks = [
+            ConvBlock(
+                filters=f,
+                dropout_rate=dropout_rate if i < 2 else 0.0,
+                use_batch_norm=batch_norm,
+                activation=activation,
+                name=f"decoder_block_{i}",
+            )
+            for i, f in enumerate(decoder_filters)
+        ]
+
+        self.output_head = tf.keras.layers.Conv2D(1, kernel_size=1, activation=output_activation)
+        self._encoder_features: List[tf.Tensor] = []
+
+    def call(self, inputs: tf.Tensor, training: bool = False) -> tf.Tensor:
+        """Forward pass."""
+        x = inputs
+        self._encoder_features = []
+        for block, pool in zip(self.down_blocks, self.pools):
+            x = block(x, training=training)
+            self._encoder_features.append(x)
+            x = pool(x)
+
+        x = self.bottleneck(x, training=training)
+
+        for upsample, block, skip in zip(
+            self.up_samples,
+            self.decoder_blocks,
+            reversed(self._encoder_features),
+        ):
+            x = upsample(x)
+            x = tf.concat([x, skip], axis=-1)
+            x = block(x, training=training)
+
+        return self.output_head(x)
+
+    def get_encoder_features(self) -> List[tf.Tensor]:
+        """Return the intermediate encoder feature maps from last forward pass."""
+        return list(self._encoder_features)
+
+
+==== END FILE ====
+---- FILE: Codes/01/models/unet_pp.py
+
+import tensorflow as tf
+from tensorflow.keras import layers, Model
+
+
+def conv_block(x, filters, name=None):
+    x = layers.Conv2D(filters, 3, padding="same", kernel_initializer="he_normal", name=None if name is None else f"{name}_conv1")(x)
+    x = layers.BatchNormalization(name=None if name is None else f"{name}_bn1")(x)
+    x = layers.ReLU(name=None if name is None else f"{name}_relu1")(x)
+    x = layers.Conv2D(filters, 3, padding="same", kernel_initializer="he_normal", name=None if name is None else f"{name}_conv2")(x)
+    x = layers.BatchNormalization(name=None if name is None else f"{name}_bn2")(x)
+    x = layers.ReLU(name=None if name is None else f"{name}_relu2")(x)
+    return x
+
+
+def build_unet_pp(input_shape=(256, 256, 3), num_classes=1, base_filters=32, deep_supervision=False):
+    """Build a UNet++ model with optional deep supervision."""
+    nb_filter = [
+        base_filters,
+        base_filters * 2,
+        base_filters * 4,
+        base_filters * 8,
+        base_filters * 16,
+    ]
+
+    inputs = layers.Input(shape=input_shape)
+
+    x0_0 = conv_block(inputs, nb_filter[0], name="x0_0")
+    x1_0 = conv_block(layers.MaxPool2D(pool_size=2)(x0_0), nb_filter[1], name="x1_0")
+    x2_0 = conv_block(layers.MaxPool2D(pool_size=2)(x1_0), nb_filter[2], name="x2_0")
+    x3_0 = conv_block(layers.MaxPool2D(pool_size=2)(x2_0), nb_filter[3], name="x3_0")
+    x4_0 = conv_block(layers.MaxPool2D(pool_size=2)(x3_0), nb_filter[4], name="x4_0")
+
+    x0_1 = conv_block(
+        layers.concatenate([
+            x0_0,
+            layers.UpSampling2D(size=2, interpolation="bilinear")(x1_0),
+        ], axis=-1),
+        nb_filter[0],
+        name="x0_1",
+    )
+
+    x1_1 = conv_block(
+        layers.concatenate([
+            x1_0,
+            layers.UpSampling2D(size=2, interpolation="bilinear")(x2_0),
+        ], axis=-1),
+        nb_filter[1],
+        name="x1_1",
+    )
+
+    x0_2 = conv_block(
+        layers.concatenate([
+            x0_0,
+            x0_1,
+            layers.UpSampling2D(size=2, interpolation="bilinear")(x1_1),
+        ], axis=-1),
+        nb_filter[0],
+        name="x0_2",
+    )
+
+    x2_1 = conv_block(
+        layers.concatenate([
+            x2_0,
+            layers.UpSampling2D(size=2, interpolation="bilinear")(x3_0),
+        ], axis=-1),
+        nb_filter[2],
+        name="x2_1",
+    )
+
+    x1_2 = conv_block(
+        layers.concatenate([
+            x1_0,
+            x1_1,
+            layers.UpSampling2D(size=2, interpolation="bilinear")(x2_1),
+        ], axis=-1),
+        nb_filter[1],
+        name="x1_2",
+    )
+
+    x0_3 = conv_block(
+        layers.concatenate([
+            x0_0,
+            x0_1,
+            x0_2,
+            layers.UpSampling2D(size=2, interpolation="bilinear")(x1_2),
+        ], axis=-1),
+        nb_filter[0],
+        name="x0_3",
+    )
+
+    x3_1 = conv_block(
+        layers.concatenate([
+            x3_0,
+            layers.UpSampling2D(size=2, interpolation="bilinear")(x4_0),
+        ], axis=-1),
+        nb_filter[3],
+        name="x3_1",
+    )
+
+    x2_2 = conv_block(
+        layers.concatenate([
+            x2_0,
+            x2_1,
+            layers.UpSampling2D(size=2, interpolation="bilinear")(x3_1),
+        ], axis=-1),
+        nb_filter[2],
+        name="x2_2",
+    )
+
+    x1_3 = conv_block(
+        layers.concatenate([
+            x1_0,
+            x1_1,
+            x1_2,
+            layers.UpSampling2D(size=2, interpolation="bilinear")(x2_2),
+        ], axis=-1),
+        nb_filter[1],
+        name="x1_3",
+    )
+
+    x0_4 = conv_block(
+        layers.concatenate([
+            x0_0,
+            x0_1,
+            x0_2,
+            x0_3,
+            layers.UpSampling2D(size=2, interpolation="bilinear")(x1_3),
+        ], axis=-1),
+        nb_filter[0],
+        name="x0_4",
+    )
+
+    if deep_supervision:
+        out1 = layers.Conv2D(num_classes, 1, activation="sigmoid", name="output_1")(x0_1)
+        out2 = layers.Conv2D(num_classes, 1, activation="sigmoid", name="output_2")(x0_2)
+        out3 = layers.Conv2D(num_classes, 1, activation="sigmoid", name="output_3")(x0_3)
+        out4 = layers.Conv2D(num_classes, 1, activation="sigmoid", name="output_4")(x0_4)
+        model = Model(inputs, [out1, out2, out3, out4], name="UNetPP_deep_supervision")
+    else:
+        out = layers.Conv2D(num_classes, 1, activation="sigmoid", name="output")(x0_4)
+        model = Model(inputs, out, name="UNetPP")
+
+    return model
+
+
+==== END FILE ====
+---- FILE: Codes/01/models/unetpp.py
+
+"""UNet++ (Nested U-Net) implementation with optional deep supervision."""
+
+from __future__ import annotations
+
+from typing import Dict, List
+
+import tensorflow as tf
+
+from models.blocks import ConvBlock
+
+
+class UNetPlusPlus(tf.keras.Model):
+    """UNet++ segmentation model.
+
+    Parameters
+    ----------
+    encoder_filters:
+        Channel sizes for encoder levels from shallow to deep.
+    deep_supervision:
+        Whether to return intermediate decoder outputs.
+    """
+
+    def __init__(
+        self,
+        encoder_filters: List[int] | None = None,
+        dropout_rate: float = 0.3,
+        batch_norm: bool = True,
+        activation: str = "relu",
+        output_activation: str = "sigmoid",
+        deep_supervision: bool = False,
+        name: str = "UNetPlusPlus",
+    ) -> None:
+        super().__init__(name=name)
+        self.filters = encoder_filters or [64, 128, 256, 512, 1024]
+        if len(self.filters) != 5:
+            raise ValueError("UNetPlusPlus expects exactly 5 filter values.")
+        self.deep_supervision = deep_supervision
+        self.output_activation = output_activation
+
+        # Encoder nodes X_{i,0}
+        self.encoder_blocks = [
+            ConvBlock(
+                filters=f,
+                dropout_rate=dropout_rate if idx > 1 else 0.0,
+                use_batch_norm=batch_norm,
+                activation=activation,
+                name=f"x_{idx}_0",
+            )
+            for idx, f in enumerate(self.filters)
+        ]
+        self.pool = tf.keras.layers.MaxPooling2D(pool_size=(2, 2))
+        self.up = tf.keras.layers.UpSampling2D(size=(2, 2), interpolation="bilinear")
+
+        # Nested decoder conv blocks X_{i,j}, j > 0
+        self.decoder_blocks: Dict[tuple[int, int], ConvBlock] = {}
+        for j in range(1, 5):
+            for i in range(0, 5 - j):
+                block = ConvBlock(
+                    filters=self.filters[i],
+                    dropout_rate=dropout_rate if i < 2 else 0.0,
+                    use_batch_norm=batch_norm,
+                    activation=activation,
+                    name=f"x_{i}_{j}",
+                )
+                self.decoder_blocks[(i, j)] = block
+                setattr(self, f"decoder_x_{i}_{j}", block)
+
+        self.output_heads = [
+            tf.keras.layers.Conv2D(1, kernel_size=1, activation=output_activation, name=f"head_{idx}")
+            for idx in range(1, 5)
+        ]
+
+    def call(self, inputs: tf.Tensor, training: bool = False) -> tf.Tensor | List[tf.Tensor]:
+        """Forward pass for UNet++ graph."""
+        x_nodes: Dict[tuple[int, int], tf.Tensor] = {}
+
+        # Build encoder chain X_{i,0}
+        current = inputs
+        for i in range(5):
+            current = self.encoder_blocks[i](current, training=training)
+            x_nodes[(i, 0)] = current
+            if i < 4:
+                current = self.pool(current)
+
+        # Build dense nested decoder nodes
+        for j in range(1, 5):
+            for i in range(0, 5 - j):
+                concat_tensors = [x_nodes[(i, k)] for k in range(j)]
+                upsampled = self.up(x_nodes[(i + 1, j - 1)])
+                upsampled = tf.image.resize(
+                    upsampled,
+                    tf.shape(x_nodes[(i, 0)])[1:3],
+                    method="bilinear",
+                )
+                concat_tensors.append(upsampled)
+                merged = tf.concat(concat_tensors, axis=-1)
+                x_nodes[(i, j)] = self.decoder_blocks[(i, j)](merged, training=training)
+
+        if self.deep_supervision:
+            return [head(x_nodes[(0, idx)]) for idx, head in enumerate(self.output_heads, start=1)]
+        return self.output_heads[-1](x_nodes[(0, 4)])
+
+
+==== END FILE ====
+---- FILE: Codes/01/optimization/__init__.py
+
+"""Optimization utilities for multi-objective training."""
+
+from .mgda import MGDASolver, MGDATrainStep
+from .pareto import ParetoFrontComputer
+from .weighted_sum import WeightedSumStrategy
+
+__all__ = [
+    "MGDASolver",
+    "MGDATrainStep",
+    "ParetoFrontComputer",
+    "WeightedSumStrategy",
+]
+
+
+==== END FILE ====
+---- FILE: Codes/01/optimization/mgda.py
+
+"""MGDA solver and train-step helper."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Dict, List, Sequence, Tuple
+
+import numpy as np
+import tensorflow as tf
+
+
+def _flatten_gradients(gradients: Sequence[tf.Tensor | None]) -> np.ndarray:
+    vectors: List[np.ndarray] = []
+    for grad in gradients:
+        if grad is None:
+            continue
+        vectors.append(tf.reshape(grad, [-1]).numpy())
+    if not vectors:
+        return np.zeros((1,), dtype=np.float64)
+    return np.concatenate(vectors, axis=0).astype(np.float64)
+
+
+def _gradients_non_zero(gradient_list: Sequence[tf.Tensor | None], epsilon: float) -> bool:
+    """Return True when any gradient tensor has non-trivial norm."""
+    for grad in gradient_list:
+        if grad is None:
+            continue
+        if float(tf.norm(grad).numpy()) > epsilon:
+            return True
+    return False
+
+
+@dataclass
+class MGDASolver:
+    """Frank-Wolfe solver for MGDA simplex optimization."""
+
+    max_iterations: int = 50
+    tolerance: float = 1e-6
+    normalize_gradients: bool = True
+    epsilon: float = 1e-12
+    alpha_history: List[np.ndarray] = field(default_factory=list)
+
+    def _normalize(self, grads: np.ndarray) -> np.ndarray:
+        if not self.normalize_gradients:
+            return grads
+        norms = np.linalg.norm(grads, axis=1, keepdims=True)
+        norms = np.maximum(norms, self.epsilon)
+        return grads / norms
+
+    def solve(self, gradients: List[List[tf.Tensor | None]]) -> Tuple[np.ndarray, List[tf.Tensor]]:
+        """Solve for minimum-norm convex combination of gradients."""
+        if not gradients:
+            raise ValueError("Expected at least one objective gradient list.")
+
+        active_indices = [
+            idx for idx, gradient_list in enumerate(gradients) if _gradients_non_zero(gradient_list, self.epsilon)
+        ]
+        if not active_indices:
+            active_indices = [0]
+        active_gradients = [gradients[idx] for idx in active_indices]
+
+        vectors = np.stack([_flatten_gradients(grad_list) for grad_list in active_gradients], axis=0)
+        vectors = self._normalize(vectors)
+        num_objectives = vectors.shape[0]
+        if num_objectives == 1:
+            alpha = np.array([1.0], dtype=np.float64)
+            combined = [grad if grad is not None else tf.constant(0.0) for grad in active_gradients[0]]
+            full_alpha = np.zeros(len(gradients), dtype=np.float64)
+            full_alpha[active_indices[0]] = 1.0
+            self.alpha_history.append(full_alpha.copy())
+            return full_alpha, combined
+
+        alpha = np.ones(num_objectives, dtype=np.float64) / float(num_objectives)
+        prev_direction = vectors.T @ alpha
+        self.alpha_history.append(alpha.copy())
+
+        for _ in range(self.max_iterations):
+            current = vectors.T @ alpha
+            inner = vectors @ current
+            target = int(np.argmin(inner))
+            direction = vectors[target] - current
+            denom = float(np.dot(direction, direction))
+            if denom <= self.epsilon:
+                break
+            gamma = float(np.clip(-np.dot(current, direction) / denom, 0.0, 1.0))
+            vertex = np.zeros_like(alpha)
+            vertex[target] = 1.0
+            new_alpha = (1.0 - gamma) * alpha + gamma * vertex
+            new_direction = vectors.T @ new_alpha
+            if np.linalg.norm(new_direction - prev_direction) < self.tolerance:
+                alpha = new_alpha
+                self.alpha_history.append(alpha.copy())
+                break
+            alpha = new_alpha
+            prev_direction = new_direction
+            self.alpha_history.append(alpha.copy())
+
+        combined_gradients: List[tf.Tensor] = []
+        param_count = len(active_gradients[0])
+        for param_index in range(param_count):
+            reference = next(
+                (grad_list[param_index] for grad_list in active_gradients if grad_list[param_index] is not None),
+                None,
+            )
+            if reference is None:
+                combined_gradients.append(None)
+                continue
+            stacked = []
+            for objective_index, grad_list in enumerate(active_gradients):
+                grad = grad_list[param_index]
+                if grad is None:
+                    grad = tf.zeros_like(reference)
+                stacked.append(tf.cast(alpha[objective_index], tf.float32) * grad)
+            combined_gradients.append(tf.add_n(stacked))
+
+        full_alpha = np.zeros(len(gradients), dtype=np.float64)
+        for local_index, global_index in enumerate(active_indices):
+            full_alpha[global_index] = alpha[local_index]
+        self.alpha_history.append(full_alpha.copy())
+        return full_alpha, combined_gradients
+
+    def get_alpha_history(self) -> List[np.ndarray]:
+        """Return saved alpha values."""
+        return list(self.alpha_history)
+
+
+@dataclass
+class MGDATrainStep:
+    """One MGDA optimization step for a batch."""
+
+    model: tf.keras.Model
+    optimizer: tf.keras.optimizers.Optimizer
+    solver: MGDASolver
+    loss_names: Sequence[str]
+
+    def step(
+        self,
+        x_batch: tf.Tensor,
+        y_batch: tf.Tensor,
+        losses: Dict[str, tf.keras.losses.Loss],
+    ) -> Dict[str, float]:
+        """Execute an MGDA step and apply combined gradient."""
+        with tf.GradientTape(persistent=True) as tape:
+            predictions = self.model(x_batch, training=True)
+            loss_values = {
+                name: tf.cast(loss_fn(y_batch, predictions), tf.float32)
+                for name, loss_fn in losses.items()
+            }
+
+        gradients_per_loss: List[List[tf.Tensor | None]] = []
+        ordered_names = [name for name in self.loss_names if name in loss_values]
+        for name in ordered_names:
+            gradients_per_loss.append(tape.gradient(loss_values[name], self.model.trainable_variables))
+        del tape
+
+        alphas, combined_gradients = self.solver.solve(gradients_per_loss)
+        self.optimizer.apply_gradients(zip(combined_gradients, self.model.trainable_variables))
+
+        metrics = {name: float(loss_values[name].numpy()) for name in ordered_names}
+        for idx, alpha in enumerate(alphas.tolist()):
+            metrics[f"alpha_{ordered_names[idx]}"] = float(alpha)
+        return metrics
+
+
+==== END FILE ====
+---- FILE: Codes/01/optimization/pareto.py
+
+"""Pareto front computation helpers."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List, Sequence
+
+import numpy as np
+import pandas as pd
+
+
+@dataclass
+class ParetoFrontComputer:
+    """Compute Pareto-optimal points and summary indicators."""
+
+    def compute(
+        self,
+        df: pd.DataFrame,
+        objective_columns: List[str],
+        minimize: Sequence[bool],
+    ) -> pd.DataFrame:
+        """Return non-dominated rows from ``df``."""
+        if len(objective_columns) != len(minimize):
+            raise ValueError("objective_columns and minimize lengths must match.")
+        if df.empty:
+            return df.copy()
+
+        values = df[objective_columns].to_numpy(dtype=np.float64)
+        transformed = values.copy()
+        for idx, to_minimize in enumerate(minimize):
+            if not to_minimize:
+                transformed[:, idx] = -transformed[:, idx]
+
+        is_dominated = np.zeros(len(df), dtype=bool)
+        for i in range(len(df)):
+            if is_dominated[i]:
+                continue
+            for j in range(len(df)):
+                if i == j:
+                    continue
+                if np.all(transformed[j] <= transformed[i]) and np.any(transformed[j] < transformed[i]):
+                    is_dominated[i] = True
+                    break
+        return df.loc[~is_dominated].copy()
+
+    def compute_hypervolume(self, pareto_front: pd.DataFrame, reference_point: np.ndarray) -> float:
+        """Compute 2D/3D hypervolume using axis-aligned dominated cuboids."""
+        if pareto_front.empty:
+            return 0.0
+        points = pareto_front.to_numpy(dtype=np.float64)
+        if points.shape[1] not in (2, 3):
+            # Lightweight approximation for higher dimensions.
+            clipped = np.maximum(reference_point - points, 0.0)
+            return float(np.mean(np.prod(clipped, axis=1)))
+        clipped = np.maximum(reference_point - points, 0.0)
+        return float(np.sum(np.prod(clipped, axis=1)))
+
+    def compute_spacing(self, pareto_front: pd.DataFrame) -> float:
+        """Compute spacing metric for Pareto-point uniformity."""
+        if len(pareto_front) <= 1:
+            return 0.0
+        points = pareto_front.to_numpy(dtype=np.float64)
+        distances = []
+        for idx, point in enumerate(points):
+            others = np.delete(points, idx, axis=0)
+            nearest = np.min(np.linalg.norm(others - point, axis=1))
+            distances.append(nearest)
+        distances = np.asarray(distances)
+        return float(np.std(distances))
+
+
+==== END FILE ====
+---- FILE: Codes/01/optimization/schedulers.py
+
+"""Learning-rate schedulers used by training loops."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import math
+
+
+@dataclass
+class CosineAnnealingLR:
+    """Cosine annealing schedule with warmup support."""
+
+    base_lr: float
+    min_lr: float
+    total_epochs: int
+    warmup_epochs: int = 0
+
+    def get_lr(self, epoch: int) -> float:
+        if epoch < self.warmup_epochs:
+            return self.base_lr * float(epoch + 1) / float(max(1, self.warmup_epochs))
+        progress = float(epoch - self.warmup_epochs) / float(
+            max(1, self.total_epochs - self.warmup_epochs)
+        )
+        cosine = 0.5 * (1.0 + math.cos(math.pi * min(1.0, max(0.0, progress))))
+        return self.min_lr + (self.base_lr - self.min_lr) * cosine
+
+
+@dataclass
+class WarmupScheduler:
+    """Linear warmup then delegates to a base scheduler."""
+
+    warmup_epochs: int
+    base_scheduler: CosineAnnealingLR
+
+    def get_lr(self, epoch: int) -> float:
+        if epoch < self.warmup_epochs:
+            return self.base_scheduler.base_lr * float(epoch + 1) / float(max(1, self.warmup_epochs))
+        return self.base_scheduler.get_lr(epoch)
+
+
+@dataclass
+class PlateauScheduler:
+    """Reduce learning rate when monitored metric plateaus."""
+
+    initial_lr: float
+    factor: float = 0.5
+    patience: int = 5
+    min_lr: float = 1e-7
+    mode: str = "max"
+
+    def __post_init__(self) -> None:
+        self.best = -float("inf") if self.mode == "max" else float("inf")
+        self.wait = 0
+        self.current_lr = self.initial_lr
+
+    def step(self, value: float) -> float:
+        improved = value > self.best if self.mode == "max" else value < self.best
+        if improved:
+            self.best = value
+            self.wait = 0
+            return self.current_lr
+
+        self.wait += 1
+        if self.wait >= self.patience:
+            self.current_lr = max(self.min_lr, self.current_lr * self.factor)
+            self.wait = 0
+        return self.current_lr
+
+    def state_dict(self) -> dict:
+        """Serialize scheduler state for checkpoint resume."""
+        return {
+            "best": self.best,
+            "wait": self.wait,
+            "current_lr": self.current_lr,
+            "initial_lr": self.initial_lr,
+            "factor": self.factor,
+            "patience": self.patience,
+            "min_lr": self.min_lr,
+            "mode": self.mode,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore scheduler state."""
+        self.best = float(state.get("best", self.best))
+        self.wait = int(state.get("wait", self.wait))
+        self.current_lr = float(state.get("current_lr", self.current_lr))
+
+
+==== END FILE ====
+---- FILE: Codes/01/optimization/weighted_sum.py
+
+"""Weighted-sum multi-objective strategy helpers."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, Mapping
+
+import numpy as np
+import tensorflow as tf
+
+
+@dataclass
+class WeightedSumStrategy:
+    """Combine objective losses using static or scheduled weights."""
+
+    base_weights: Mapping[str, float]
+    schedule_type: str = "static"
+    ramp_epochs: int = 20
+    milestones: Mapping[int, Mapping[str, float]] | None = None
+
+    def get_weights(self, epoch: int) -> Dict[str, float]:
+        """Return objective weights for the provided epoch."""
+        weights = dict(self.base_weights)
+        if self.schedule_type == "static":
+            return weights
+
+        if self.schedule_type == "linear_ramp":
+            factor = min(1.0, max(0.0, float(epoch) / float(max(1, self.ramp_epochs))))
+            return {name: float(weight) * factor for name, weight in weights.items()}
+
+        if self.schedule_type == "step":
+            if not self.milestones:
+                return weights
+            updated = dict(weights)
+            for step_epoch in sorted(self.milestones):
+                if epoch >= step_epoch:
+                    updated.update({k: float(v) for k, v in self.milestones[step_epoch].items()})
+            return updated
+
+        if self.schedule_type == "cosine":
+            factor = 0.5 * (1.0 + np.cos(np.pi * min(1.0, float(epoch) / float(max(1, self.ramp_epochs)))))
+            return {name: float(weight) * factor for name, weight in weights.items()}
+
+        raise ValueError(f"Unknown schedule_type '{self.schedule_type}'.")
+
+    def combine(self, losses: Mapping[str, tf.Tensor], epoch: int) -> tf.Tensor:
+        """Return weighted scalar loss."""
+        weights = self.get_weights(epoch)
+        weighted_terms = []
+        weight_values = []
+        for name, loss_value in losses.items():
+            weight = tf.constant(weights.get(name, 0.0), dtype=tf.float32)
+            weighted_terms.append(weight * tf.cast(loss_value, tf.float32))
+            weight_values.append(weight)
+        return tf.math.divide_no_nan(
+            tf.add_n(weighted_terms),
+            tf.add_n(weight_values) if weight_values else tf.constant(1.0, dtype=tf.float32),
+        )
+
+
+==== END FILE ====
+---- FILE: Codes/01/plugins/README.md
+
+# Plugin Guide
+
+This folder is the recommended place for project-specific extensions that should remain separate from the core framework.
+
+## Why Use Plugins
+
+Use plugins when you want to:
+
+- register a new semantic segmentation architecture,
+- register a new optimization objective,
+- define paper-specific experimental components,
+- keep custom research code isolated from framework internals.
+
+The runtime imports any modules listed in the YAML configuration under `extensions.plugin_modules`, and any registration side effects inside those modules become available automatically.
+
+## Folder Pattern
+
+You can keep the simple two-file layout already included in this repository:
+
+- `plugins/models.py` for `register_model_builder(...)`
+- `plugins/objectives.py` for `register_objective(...)`
+
+For larger studies, split them further:
+
+- `plugins/models_baselines.py`
+- `plugins/models_ablation.py`
+- `plugins/objectives_paper.py`
+- `plugins/objectives_deployment.py`
+
+## Register a Custom Model
+
+```python
+from tensorflow import keras
+
+from models import register_model_builder
+
+
+def build_my_model(**kwargs):
+    inputs = keras.Input(shape=kwargs["input_shape"])
+    x = keras.layers.Conv2D(32, 3, padding="same", activation="relu")(inputs)
+    outputs = keras.layers.Conv2D(kwargs["num_classes"], 1, activation=kwargs.get("activation", "sigmoid"))(x)
+    return keras.Model(inputs, outputs, name="MyModel")
+
+
+register_model_builder(
+    name="MyModel",
+    builder=build_my_model,
+    aliases=["my_model"],
+    metadata={"family": "paper_baseline"},
+)
+```
+
+## Register a Custom Objective
+
+```python
+from src import register_objective
+
+
+register_objective(
+    name="paper_score",
+    direction="max",
+    getter=lambda result: (
+        0.6 * float(result["summary"].get("final_val_iou", 0.0))
+        + 0.2 * float(result["summary"].get("final_val_boundary_iou", 0.0))
+        + 0.2 * float(result["summary"].get("final_val_f1_score", result["summary"].get("final_val_dice", 0.0)))
+    ),
+    description="Weighted score for ranking models in the paper.",
+)
+```
+
+## Activate Plugins From YAML
+
+```yaml
+extensions:
+  plugin_modules:
+    - plugins.objectives
+    - plugins.models
+```
+
+## Good Research Practice
+
+- Keep the objective definition close to the paper wording.
+- Prefer interpretable objective names like `boundary_quality` or `compactness_penalty`.
+- Store composite scores in plugins, not buried in notebooks.
+- If an objective is only for ranking, document the formula and rationale in the paper and in the plugin file.
+
+## Current Examples
+
+- `plugins/models.py` registers `TinyPaperUNet`.
+- `plugins/objectives.py` registers `paper_quality` and `efficiency_score`.
+
+
+==== END FILE ====
+---- FILE: Codes/01/plugins/__init__.py
+
+"""Plugin helpers for user-defined models, objectives, and extensions."""
+
+from .loader import load_plugin_modules, load_plugins_from_config
+
+__all__ = ["load_plugin_modules", "load_plugins_from_config"]
+
+
+==== END FILE ====
+---- FILE: Codes/01/plugins/loader.py
+
+"""Runtime plugin loading for custom experiment components."""
+
+import importlib
+import logging
+from typing import Any, Dict, Iterable, List
+
+
+logger = logging.getLogger(__name__)
+
+
+def _normalized_module_list(module_names: Iterable[str]) -> List[str]:
+    ordered = []
+    seen = set()
+    for module_name in module_names:
+        if not module_name:
+            continue
+        module_name = str(module_name).strip()
+        if not module_name or module_name in seen:
+            continue
+        seen.add(module_name)
+        ordered.append(module_name)
+    return ordered
+
+
+def load_plugin_modules(module_names: Iterable[str]) -> List[str]:
+    """Import plugin modules once so their registration side effects run."""
+    loaded = []
+    for module_name in _normalized_module_list(module_names):
+        importlib.import_module(module_name)
+        loaded.append(module_name)
+        logger.info("Loaded plugin module: %s", module_name)
+    return loaded
+
+
+def load_plugins_from_config(config: Dict[str, Any]) -> List[str]:
+    """Load plugin modules declared in the experiment config."""
+    extensions = config.get("extensions", {})
+    plugin_modules = extensions.get("plugin_modules", [])
+    return load_plugin_modules(plugin_modules)
+
+
+==== END FILE ====
+---- FILE: Codes/01/plugins/models.py
+
+"""Example custom models registered through the plugin system."""
+
+from tensorflow import keras
+
+from models import register_model_builder
+
+
+def build_tiny_paper_unet(**kwargs):
+    """Small baseline example showing how to plug in a custom model."""
+    filters = int(kwargs.get("filters", 16))
+    inputs = keras.Input(shape=kwargs["input_shape"])
+    x = keras.layers.Conv2D(filters, 3, padding="same", activation="relu")(inputs)
+    x = keras.layers.Conv2D(filters, 3, padding="same", activation="relu")(x)
+    outputs = keras.layers.Conv2D(kwargs["num_classes"], 1, activation=kwargs.get("activation", "sigmoid"))(x)
+    return keras.Model(inputs, outputs, name="TinyPaperUNet")
+
+
+register_model_builder(
+    name="TinyPaperUNet",
+    builder=build_tiny_paper_unet,
+    aliases=["tiny_paper_unet"],
+    metadata={"family": "plugin_example"},
+    overwrite=True,
+)
+
+
+==== END FILE ====
+---- FILE: Codes/01/plugins/objectives.py
+
+"""Example custom objectives for paper-ready experiments."""
+
+from src import register_objective
+
+
+register_objective(
+    name="paper_quality",
+    direction="max",
+    getter=lambda result: (
+        0.7 * float(result["summary"].get("final_val_iou", 0.0))
+        + 0.3 * float(result["summary"].get("final_val_boundary_iou", 0.0))
+    ),
+    description="Weighted validation score combining region IoU and boundary IoU.",
+    overwrite=True,
+)
+
+register_objective(
+    name="efficiency_score",
+    direction="max",
+    getter=lambda result: 1.0 / (1.0 + float(result.get("inference_time", 0.0))),
+    description="Inverse-latency score for paper tables and Pareto ranking.",
+    overwrite=True,
+)
+
+
+==== END FILE ====
+---- FILE: Codes/01/requirements.txt
+
+tensorflow>=2.10
+numpy>=1.24,<2.0
+pandas>=2.0
+matplotlib>=3.7
+scipy>=1.10
+scikit-learn>=1.2
+scikit-image>=0.21
+pyyaml>=6.0
+tqdm>=4.65
+opencv-python-headless>=4.7
+tensorboard>=2.10
+Pillow>=9.5
+
+
+==== END FILE ====
+---- FILE: Codes/01/results/test_report.txt
+
+tests_run=62
+failures=0
+errors=0
+skipped=0
+expected_failures=0
+unexpected_successes=0
+was_successful=True
+detail_log=results/test_details.log
+timings_log=results/test_timings.json
+failures_log=results/test_failures.log
+
+==== END FILE ====
+---- FILE: Codes/01/results/test_timings.json
+
+[
+  {
+    "test": "test_restore_optimizer_state (test_checkpointing.TestCheckpointing)",
+    "seconds": 1.0029
+  },
+  {
+    "test": "test_save_and_load_state (test_checkpointing.TestCheckpointing)",
+    "seconds": 0.0979
+  },
+  {
+    "test": "test_mask_binarization (test_data_loading.TestDataLoading)",
+    "seconds": 0.0277
+  },
+  {
+    "test": "test_orphan_detection (test_data_loading.TestDataLoading)",
+    "seconds": 0.0162
+  },
+  {
+    "test": "test_output_dtypes_and_ranges (test_data_loading.TestDataLoading)",
+    "seconds": 0.0163
+  },
+  {
+    "test": "test_pairing_matches_correctly (test_data_loading.TestDataLoading)",
+    "seconds": 0.0158
+  },
+  {
+    "test": "test_scan_finds_all_files (test_data_loading.TestDataLoading)",
+    "seconds": 0.0073
+  },
+  {
+    "test": "test_split_determinism (test_data_loading.TestDataLoading)",
+    "seconds": 0.0075
+  },
+  {
+    "test": "test_stratified_split_ratios (test_data_loading.TestDataLoading)",
+    "seconds": 0.0156
+  },
+  {
+    "test": "test_tf_dataset_augmentation_pipeline_is_repeatable (test_data_loading.TestDataLoading)",
+    "seconds": 0.3787
+  },
+  {
+    "test": "test_tf_dataset_augmentation_pipeline_runs (test_data_loading.TestDataLoading)",
+    "seconds": 0.1234
+  },
+  {
+    "test": "test_all_losses_differentiable (test_losses.TestLosses)",
+    "seconds": 0.8157
+  },
+  {
+    "test": "test_bce_perfect_prediction (test_losses.TestLosses)",
+    "seconds": 0.0009
+  },
+  {
+    "test": "test_boundary_loss_perfect (test_losses.TestLosses)",
+    "seconds": 0.001
+  },
+  {
+    "test": "test_dice_loss_symmetry (test_losses.TestLosses)",
+    "seconds": 0.0028
+  },
+  {
+    "test": "test_focal_loss_reduces_easy_examples (test_losses.TestLosses)",
+    "seconds": 0.001
+  },
+  {
+    "test": "test_iou_loss_no_overlap (test_losses.TestLosses)",
+    "seconds": 0.0005
+  },
+  {
+    "test": "test_iou_loss_perfect (test_losses.TestLosses)",
+    "seconds": 0.0006
+  },
+  {
+    "test": "test_loss_manager_returns_all (test_losses.TestLosses)",
+    "seconds": 0.0022
+  },
+  {
+    "test": "test_loss_manager_weighted (test_losses.TestLosses)",
+    "seconds": 0.0031
+  },
+  {
+    "test": "test_shape_losses (test_losses.TestLosses)",
+    "seconds": 0.001
+  },
+  {
+    "test": "test_alphas_non_negative (test_mgda.TestMGDA)",
+    "seconds": 0.0019
+  },
+  {
+    "test": "test_alphas_sum_to_one (test_mgda.TestMGDA)",
+    "seconds": 0.0007
+  },
+  {
+    "test": "test_gradient_combination_shape (test_mgda.TestMGDA)",
+    "seconds": 0.0018
+  },
+  {
+    "test": "test_identical_gradients_uniform (test_mgda.TestMGDA)",
+    "seconds": 0.0006
+  },
+  {
+    "test": "test_single_objective (test_mgda.TestMGDA)",
+    "seconds": 0.0003
+  },
+  {
+    "test": "test_zero_gradient_handling (test_mgda.TestMGDA)",
+    "seconds": 0.0004
+  },
+  {
+    "test": "test_gradient_flow (test_models.TestModels)",
+    "seconds": 0.7113
+  },
+  {
+    "test": "test_model_factory_invalid (test_models.TestModels)",
+    "seconds": 0.0
+  },
+  {
+    "test": "test_model_factory_unet (test_models.TestModels)",
+    "seconds": 0.0238
+  },
+  {
+    "test": "test_model_factory_unetpp (test_models.TestModels)",
+    "seconds": 0.038
+  },
+  {
+    "test": "test_output_range (test_models.TestModels)",
+    "seconds": 0.2358
+  },
+  {
+    "test": "test_unet_output_shape (test_models.TestModels)",
+    "seconds": 0.2344
+  },
+  {
+    "test": "test_unetpp_deep_supervision_shapes (test_models.TestModels)",
+    "seconds": 0.5577
+  },
+  {
+    "test": "test_unetpp_output_shape (test_models.TestModels)",
+    "seconds": 0.3913
+  },
+  {
+    "test": "test_dataset_hash_consistent (test_reproducibility.TestReproducibility)",
+    "seconds": 0.0728
+  },
+  {
+    "test": "test_different_seed_different_results (test_reproducibility.TestReproducibility)",
+    "seconds": 0.0853
+  },
+  {
+    "test": "test_same_seed_same_augmentation (test_reproducibility.TestReproducibility)",
+    "seconds": 0.0796
+  },
+  {
+    "test": "test_same_seed_same_init (test_reproducibility.TestReproducibility)",
+    "seconds": 0.6209
+  },
+  {
+    "test": "test_same_seed_same_split (test_reproducibility.TestReproducibility)",
+    "seconds": 0.0857
+  },
+  {
+    "test": "test_apply_logging_overrides_preserves_debug_file_logs (test_run_all_cli.TestRunAllCLI)",
+    "seconds": 0.0001
+  },
+  {
+    "test": "test_normalize_log_level_uppercases (test_run_all_cli.TestRunAllCLI)",
+    "seconds": 0.0
+  },
+  {
+    "test": "test_resolve_console_level_debug (test_run_all_cli.TestRunAllCLI)",
+    "seconds": 0.0
+  },
+  {
+    "test": "test_resolve_console_level_defaults_to_info (test_run_all_cli.TestRunAllCLI)",
+    "seconds": 0.0
+  },
+  {
+    "test": "test_resolve_console_level_quiet_wins (test_run_all_cli.TestRunAllCLI)",
+    "seconds": 0.0
+  },
+  {
+    "test": "test_deep_supervision_weighted_training_runs (test_training.TestTraining)",
+    "seconds": 9.0072
+  },
+  {
+    "test": "test_early_stopping_triggers (test_training.TestTraining)",
+    "seconds": 4.7913
+  },
+  {
+    "test": "test_lr_scheduler_decreases (test_training.TestTraining)",
+    "seconds": 5.4664
+  },
+  {
+    "test": "test_mgda_runs (test_training.TestTraining)",
+    "seconds": 12.0718
+  },
+  {
+    "test": "test_single_objective_runs (test_training.TestTraining)",
+    "seconds": 5.192
+  },
+  {
+    "test": "test_training_resumes_from_checkpoint (test_training.TestTraining)",
+    "seconds": 7.824
+  },
+  {
+    "test": "test_training_skips_when_checkpoint_already_complete (test_training.TestTraining)",
+    "seconds": 5.7353
+  },
+  {
+    "test": "test_weighted_multi_loss_runs (test_training.TestTraining)",
+    "seconds": 5.8483
+  },
+  {
+    "test": "test_boundary_overlay_saves (test_visualization.TestVisualization)",
+    "seconds": 0.6121
+  },
+  {
+    "test": "test_complexity_analyzer_handles_subclassed_models (test_visualization.TestVisualization)",
+    "seconds": 0.7888
+  },
+  {
+    "test": "test_complexity_plot_saves (test_visualization.TestVisualization)",
+    "seconds": 0.1962
+  },
+  {
+    "test": "test_error_maps_saves (test_visualization.TestVisualization)",
+    "seconds": 0.7611
+  },
+  {
+    "test": "test_latex_table_valid (test_visualization.TestVisualization)",
+    "seconds": 0.0924
+  },
+  {
+    "test": "test_loss_curves_saves (test_visualization.TestVisualization)",
+    "seconds": 0.4075
+  },
+  {
+    "test": "test_pareto_experiment_save_outputs_uses_objective_columns (test_visualization.TestVisualization)",
+    "seconds": 0.3355
+  },
+  {
+    "test": "test_pareto_plot_saves (test_visualization.TestVisualization)",
+    "seconds": 0.3602
+  },
+  {
+    "test": "test_prediction_grid_saves (test_visualization.TestVisualization)",
+    "seconds": 0.6437
+  }
+]
+
+==== END FILE ====
+---- FILE: Codes/01/run_all.py
+
+"""Master execution script for the publication-grade segmentation framework."""
+
+from __future__ import annotations
+
+import argparse
+import importlib
+import json
+import logging
+import os
+import platform
+import shutil
+import sys
+import time
+import traceback
+import warnings
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
+try:
+    import tensorflow as tf
+except Exception:  # pragma: no cover - exercised in dependency-missing envs
+    tf = None
+
+from data.integrity import compute_dataset_hash
+from logging_utils.logger import DualLogger
+from utils.config_loader import ConfigValidationError, load_config
+from utils.reproducibility import set_global_seed
+from utils.test_reporting import run_suite_with_logging
+
+
+@dataclass
+class TestResult:
+    """Simple test-suite result payload."""
+
+    total: int
+    failed: int
+    critical_failures: int
+
+
+def resolve_console_level(verbose: int, quiet: bool) -> str:
+    """Map CLI verbosity flags to a console log level."""
+    if quiet:
+        return "ERROR"
+    if verbose >= 2:
+        return "DEBUG"
+    if verbose == 1:
+        return "INFO"
+    return "WARNING"
+
+
+def normalize_log_level(level: str) -> str:
+    """Normalize a user-provided logging level string."""
+    return str(level).upper()
+
+
+def apply_logging_overrides(config: Dict[str, object], console_level: str, file_level: str) -> Dict[str, object]:
+    """Apply CLI logging overrides while keeping file logs verbose."""
+    resolved = json.loads(json.dumps(config))
+    logging_cfg = dict(resolved.get("logging", {}))
+    logging_cfg["console_level"] = normalize_log_level(console_level)
+    logging_cfg["file_level"] = normalize_log_level(file_level)
+    resolved["logging"] = logging_cfg
+    return resolved
+
+
+def configure_runtime_warnings(
+    results_dir: str | Path = "results",
+    console_level: str = "INFO",
+    file_level: str = "DEBUG",
+) -> DualLogger:
+    """Set predictable warning/logging behavior for production runs."""
+    results_path = Path(results_dir)
+    logger = DualLogger(
+        results_path / "pipeline.log",
+        console_level=normalize_log_level(console_level),
+        file_level=normalize_log_level(file_level),
+    )
+    logging.captureWarnings(True)
+    warning_logger = logging.getLogger("py.warnings")
+    warning_logger.setLevel(logging.WARNING)
+    for handler in logger.logger.handlers:
+        warning_logger.addHandler(handler)
+    warning_logger.propagate = False
+
+    warnings.filterwarnings(
+        "once",
+        message=r".*Compiled the loaded model, but the compiled metrics have yet to be built.*",
+    )
+    warnings.filterwarnings(
+        "once",
+        message=r".*This file format is considered legacy.*",
+    )
+    warnings.filterwarnings(
+        "once",
+        category=FutureWarning,
+        module=r"pandas.*",
+    )
+
+    if tf is not None:
+        tf.get_logger().setLevel("WARNING" if console_level == "DEBUG" else "ERROR")
+    logging.getLogger("tensorflow").setLevel(logging.WARNING if console_level == "DEBUG" else logging.ERROR)
+    logging.getLogger("absl").setLevel(logging.WARNING if console_level == "DEBUG" else logging.ERROR)
+    logger.info("Runtime warning filters configured.")
+    return logger
+
+
+def run_test_suite(quick: bool = False) -> TestResult:
+    """Run test suite using unittest discovery."""
+    import unittest
+
+    loader = unittest.TestLoader()
+    suite = loader.discover("tests", pattern="test_*.py")
+    result, report_path, detail_path = run_suite_with_logging(
+        suite,
+        report_dir="results",
+        verbosity=2 if not quick else 1,
+    )
+    failed = len(result.failures) + len(result.errors)
+    print(f"Test summary written to {report_path}")
+    print(f"Detailed test log written to {detail_path}")
+    return TestResult(
+        total=result.testsRun,
+        failed=failed,
+        critical_failures=failed,
+    )
+
+
+def validate_environment() -> Tuple[bool, List[str], List[str]]:
+    """Check Python/TF/runtime requirements."""
+    warnings: List[str] = []
+    errors: List[str] = []
+
+    if sys.version_info < (3, 10):
+        errors.append("Python 3.10+ is required.")
+
+    if tf is None:
+        errors.append("TensorFlow is not installed.")
+        gpus = []
+    else:
+        tf_version = tuple(int(part) for part in tf.__version__.split(".")[:2])
+        if tf_version < (2, 10):
+            errors.append(f"TensorFlow>=2.10 required, found {tf.__version__}.")
+        gpus = tf.config.list_physical_devices("GPU")
+    if not gpus:
+        warnings.append("No GPU detected; full pipeline will be significantly slower.")
+    else:
+        try:
+            device_details = tf.config.experimental.get_device_details(gpus[0])
+            device_name = device_details.get("device_name") or getattr(gpus[0], "name", "GPU:0")
+            warnings.append(f"Detected GPU device: {device_name}.")
+        except Exception:
+            warnings.append("GPU detected, but detailed device information is unavailable.")
+
+    required_packages = [
+        "numpy",
+        "pandas",
+        "matplotlib",
+        "scipy",
+        "yaml",
+        "tqdm",
+        "PIL",
+        "cv2",
+        "sklearn",
+    ]
+    for package in required_packages:
+        try:
+            __import__(package)
+        except Exception:
+            errors.append(f"Missing required package: {package}")
+
+    free_disk_gb = shutil.disk_usage(Path.cwd()).free / (1024**3)
+    if free_disk_gb < 10:
+        warnings.append(f"Free disk space is low ({free_disk_gb:.2f} GB).")
+
+    return len(errors) == 0, warnings, errors
+
+
+def validate_dataset(config: Dict[str, object]) -> Tuple[bool, dict]:
+    """Validate dataset paths and basic sample consistency."""
+    data_cfg = dict(config.get("data", {}))
+    rgb_dir = Path(str(data_cfg.get("rgb_dir", "")))
+    mask_dir = Path(str(data_cfg.get("mask_dir", "")))
+    if not rgb_dir.exists() or not mask_dir.exists():
+        return False, {"error": "RGB or mask directory does not exist."}
+
+    rgb_files = sorted(rgb_dir.glob("*.png"))
+    mask_files = sorted(mask_dir.glob("*.tif"))
+    if not rgb_files or not mask_files:
+        return False, {"error": "No RGB or mask files found."}
+
+    dataset_hash = compute_dataset_hash(str(rgb_dir), str(mask_dir))
+    sample_match = len({path.stem for path in rgb_files} & {path.stem for path in mask_files})
+    return True, {
+        "rgb_count": len(rgb_files),
+        "mask_count": len(mask_files),
+        "matched_pairs": sample_match,
+        "dataset_hash": dataset_hash,
+    }
+
+
+def main() -> None:
+    """Execute the full end-to-end pipeline."""
+    parser = argparse.ArgumentParser(description="Building Segmentation MOO Pipeline")
+    parser.add_argument("--config", default="configs/default.yaml", help="Path to config")
+    parser.add_argument("--experiments-only", action="store_true")
+    parser.add_argument("--test-only", action="store_true")
+    parser.add_argument("--figures-only", action="store_true")
+    parser.add_argument("--experiment", type=str, default=None, help="Run single experiment")
+    parser.add_argument("--force", action="store_true", help="Re-run completed experiments")
+    parser.add_argument("--no-pareto", action="store_true", help="Skip Pareto sweep")
+    parser.add_argument("-v", "--verbose", action="count", default=1, help="Increase console verbosity; repeat for DEBUG")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Only show errors on the console")
+    parser.add_argument(
+        "--log-file-level",
+        default="DEBUG",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Set the minimum level written to log files",
+    )
+    args = parser.parse_args()
+
+    start_time = time.time()
+    console_level = resolve_console_level(args.verbose, args.quiet)
+    file_level = normalize_log_level(args.log_file_level)
+    pipeline_logger = configure_runtime_warnings("results", console_level=console_level, file_level=file_level)
+    pipeline_logger.info(f"Starting pipeline with args: {vars(args)}")
+    env_valid, env_warnings, env_errors = validate_environment()
+    if not env_valid:
+        print("CRITICAL: Environment validation failed")
+        for err in env_errors:
+            print(f"  ERROR: {err}")
+            pipeline_logger.error(f"Environment error: {err}")
+        pipeline_logger.close()
+        sys.exit(2)
+    for warn in env_warnings:
+        print(f"  WARNING: {warn}")
+        pipeline_logger.warning(f"Environment warning: {warn}")
+
+    try:
+        config = load_config(args.config)
+    except ConfigValidationError as exc:
+        print(f"CRITICAL: Config validation failed: {exc}")
+        pipeline_logger.exception("Configuration validation failed")
+        pipeline_logger.close()
+        sys.exit(2)
+
+    config = apply_logging_overrides(config, console_level, file_level)
+    set_global_seed(int(config.get("project", {}).get("seed", 42)))
+    pipeline_logger.log_config({"config_path": args.config, "seed": int(config.get("project", {}).get("seed", 42))})
+
+    ds_valid, ds_info = validate_dataset(config)
+    if not ds_valid:
+        print("CRITICAL: Dataset validation failed")
+        print(ds_info)
+        pipeline_logger.error(f"Dataset validation failed: {ds_info}")
+        pipeline_logger.close()
+        sys.exit(2)
+    print(f"Dataset info: {json.dumps(ds_info, indent=2)}")
+    pipeline_logger.info(f"Dataset info: {ds_info}")
+
+    if not args.experiments_only and not args.figures_only:
+        test_result = run_test_suite(quick=args.experiment is not None)
+        pipeline_logger.info(
+            f"Test suite finished | total={test_result.total} failed={test_result.failed} "
+            f"critical_failures={test_result.critical_failures}"
+        )
+        if test_result.critical_failures > 0:
+            print(f"CRITICAL: {test_result.critical_failures} critical tests failed")
+            pipeline_logger.error(f"Aborting due to {test_result.critical_failures} critical test failures.")
+            pipeline_logger.close()
+            sys.exit(3)
+
+    if args.test_only:
+        print("Tests completed. Exiting.")
+        pipeline_logger.info("Exiting after test-only run.")
+        pipeline_logger.close()
+        sys.exit(0)
+
+    from experiments import ExperimentRegistry, ExperimentRunner
+
+    runner = ExperimentRunner(config, force=args.force, console_level=console_level, file_level=file_level)
+    try:
+        if not args.figures_only:
+            if args.experiment:
+                runner.run_single(args.experiment)
+            elif args.no_pareto:
+                runner.run_subset([name for name in runner.get_all_experiments() if name != "pareto_sweep"])
+            else:
+                runner.run_all()
+
+        runner.generate_paper_outputs()
+    except Exception as exc:  # pragma: no cover - safety net for production runs
+        error_log = Path(config.get("export", {}).get("results_dir", "results")) / "pipeline_error.log"
+        error_log.parent.mkdir(parents=True, exist_ok=True)
+        error_log.write_text(traceback.format_exc(), encoding="utf-8")
+        print(f"CRITICAL: Pipeline failed with {exc.__class__.__name__}: {exc}")
+        print(f"Detailed traceback written to {error_log}")
+        pipeline_logger.exception("Pipeline execution failed")
+        pipeline_logger.close()
+        sys.exit(4)
+
+    elapsed = time.time() - start_time
+    registry = ExperimentRegistry(Path(config.get("export", {}).get("results_dir", "results")) / "experiment_registry.json")
+    payload = registry.load()
+    completed = [name for name, status in payload.items() if status.get("status") == "completed"]
+    failed = [name for name, status in payload.items() if status.get("status") == "failed"]
+
+    print("\n" + "=" * 60)
+    print("PIPELINE COMPLETE")
+    print("=" * 60)
+    print(f"Python: {platform.python_version()}")
+    print(f"Total time: {elapsed / 3600:.2f} hours")
+    print(f"Experiments completed: {len(completed)}/{len(payload)}")
+    if failed:
+        print(f"Experiments failed: {', '.join(failed)}")
+    print("Paper outputs: paper/figures and paper/tables")
+    print("=" * 60)
+    pipeline_logger.info(
+        f"Pipeline finished | completed={len(completed)} failed={len(failed)} elapsed_seconds={elapsed:.2f}"
+    )
+    if failed:
+        pipeline_logger.warning(f"Failed experiments: {failed}")
+    pipeline_logger.close()
+
+    sys.exit(0 if not failed else 1)
+
+
+if __name__ == "__main__":
+    main()
+
+
+==== END FILE ====
+---- FILE: Codes/01/run_tests.py
+
+"""Master test runner for unit and integration suites."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import unittest
+
+from utils.test_reporting import run_suite_with_logging
+
+
+def _select_pattern(args: argparse.Namespace) -> str:
+    if args.quick:
+        return "test_*.py"
+    if args.unit:
+        return "test_*.py"
+    if args.integration:
+        return "test_*integration*.py"
+    return "test_*.py"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run framework tests")
+    parser.add_argument("--unit", action="store_true", help="Run unit tests")
+    parser.add_argument("--integration", action="store_true", help="Run integration tests")
+    parser.add_argument("--quick", action="store_true", help="Run only quick tests")
+    args = parser.parse_args()
+
+    loader = unittest.TestLoader()
+    suite = loader.discover("tests", pattern=_select_pattern(args))
+    if args.quick:
+        suite = unittest.TestSuite(
+            [test for index, test in enumerate(suite) if index < 5]
+        )
+    result, report_path, detail_path = run_suite_with_logging(suite, report_dir="results", verbosity=2)
+    print(f"Test summary written to {report_path}")
+    print(f"Detailed test log written to {detail_path}")
+    sys.exit(0 if result.wasSuccessful() else 1)
+
+
+if __name__ == "__main__":
+    main()
+
+
+==== END FILE ====
+---- FILE: Codes/01/scripts/smoke_test.py
+
+#!/usr/bin/env python3
+"""Run a minimal smoke test against the publication pipeline."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from experiments.experiment_runner import ExperimentRunner
+from utils.config_loader import load_config
+from utils.reproducibility import set_global_seed
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Smoke-test one short experiment run.")
+    parser.add_argument("--config", default="configs/default.yaml", help="Config path")
+    parser.add_argument("--experiment", default="unet_single", help="Experiment name")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    config = dict(config)
+    config["training"] = dict(config.get("training", {}))
+    config["training"]["epochs"] = 1
+    set_global_seed(int(config.get("project", {}).get("seed", 42)))
+
+    runner = ExperimentRunner(config, force=True)
+    runner.run_single(args.experiment)
+    status = runner.get_status()
+    print(json.dumps({"experiment": args.experiment, "status": status.get(args.experiment, "unknown")}, indent=2))
+
+
+if __name__ == "__main__":
+    main()
+
+
+==== END FILE ====
+---- FILE: Codes/01/setup.py
+
+from setuptools import find_packages, setup
+
+
+def _read_requirements() -> list[str]:
+    requirements_path = "requirements.txt"
+    with open(requirements_path, "r", encoding="utf-8") as handle:
+        return [
+            line.strip()
+            for line in handle
+            if line.strip() and not line.strip().startswith("#")
+        ]
+
+
+setup(
+    name="building-segmentation-moo",
+    version="1.0.0",
+    description="Multi-objective optimization for building segmentation.",
+    packages=find_packages(),
+    python_requires=">=3.10",
+    install_requires=_read_requirements(),
+)
+
+
+==== END FILE ====
+---- FILE: Codes/01/src/__init__.py
+
+"""Core framework modules for multi-objective optimization.
+
+This package contains the core modules for multi-objective optimization,
+evaluation, and Pareto front analysis.
+"""
+
+from .optimize import (
+    run_moo_experiment,
+    run_nsga2_optimization,
+    grid_search_optimization,
+    ObjectiveVector,
+    SegmentationProblem,
+)
+
+from .pareto import (
+    extract_pareto_front,
+    plot_pareto_front,
+    plot_pareto_front_2d,
+    plot_pareto_front_3d,
+    generate_pareto_report,
+)
+
+from .evaluate import (
+    evaluate_model,
+    evaluate_segmentation_metrics,
+    evaluate_model_complexity,
+    evaluate_inference_time,
+    generate_comparison_table,
+    generate_latex_table,
+    plot_metric_distributions,
+)
+from .objectives import (
+    ObjectiveSpec,
+    get_objective_spec,
+    list_objectives,
+    register_objective,
+    resolve_objective_specs,
+)
+
+__all__ = [
+    # Optimization
+    'run_moo_experiment',
+    'run_nsga2_optimization',
+    'grid_search_optimization',
+    'ObjectiveVector',
+    'SegmentationProblem',
+    # Pareto
+    'extract_pareto_front',
+    'plot_pareto_front',
+    'plot_pareto_front_2d',
+    'plot_pareto_front_3d',
+    'generate_pareto_report',
+    # Evaluation
+    'evaluate_model',
+    'evaluate_segmentation_metrics',
+    'evaluate_model_complexity',
+    'evaluate_inference_time',
+    'generate_comparison_table',
+    'generate_latex_table',
+    'plot_metric_distributions',
+    # Objective registry
+    'ObjectiveSpec',
+    'register_objective',
+    'get_objective_spec',
+    'resolve_objective_specs',
+    'list_objectives',
+]
+
+
+==== END FILE ====
+
+
+==== END FILE ====

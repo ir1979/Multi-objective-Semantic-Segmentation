@@ -1,0 +1,2288 @@
+Part 9 of 16
+
+---- FILE: ai_pack_output/part000.txt
+
+Part 1 of 8
+
+AI PROJECT DIGEST
+============================================================
+
+Binary files:
+Codes/01/Misc/01.rar
+Codes/01/datasets/RGB/austin1_0_0_256.png
+Codes/01/datasets/RGB/austin1_0_10_256.png
+Codes/01/datasets/RGB/austin1_0_11_256.png
+Codes/01/datasets/RGB/austin1_0_12_256.png
+Codes/01/datasets/RGB/austin1_0_13_256.png
+Codes/01/datasets/RGB/austin1_0_14_256.png
+Codes/01/datasets/RGB/austin1_0_15_256.png
+Codes/01/datasets/RGB/austin1_0_16_256.png
+Codes/01/datasets/RGB/austin1_0_17_256.png
+Codes/01/datasets/RGB/austin1_0_18_256.png
+Codes/01/datasets/RGB/austin1_0_1_256.png
+Codes/01/datasets/RGB/austin1_0_2_256.png
+Codes/01/datasets/RGB/austin1_0_3_256.png
+Codes/01/datasets/RGB/austin1_0_4_256.png
+Codes/01/datasets/RGB/austin1_0_5_256.png
+Codes/01/datasets/RGB/austin1_0_6_256.png
+Codes/01/datasets/RGB/austin1_0_7_256.png
+Codes/01/datasets/RGB/austin1_0_8_256.png
+Codes/01/datasets/RGB/austin1_0_9_256.png
+Codes/01/datasets/RGB/austin1_1_0_256.png
+Codes/01/datasets/RGB/austin1_1_10_256.png
+Codes/01/datasets/RGB/austin1_1_11_256.png
+Codes/01/datasets/RGB/austin1_1_12_256.png
+Codes/01/datasets/RGB/austin1_1_13_256.png
+Codes/01/datasets/RGB/austin1_1_14_256.png
+Codes/01/datasets/RGB/austin1_1_15_256.png
+Codes/01/datasets/RGB/austin1_1_16_256.png
+Codes/01/datasets/RGB/austin1_1_17_256.png
+Codes/01/datasets/RGB/austin1_1_18_256.png
+Codes/01/datasets/RGB/austin1_1_1_256.png
+Codes/01/datasets/RGB/austin1_1_2_256.png
+Codes/01/datasets/RGB/austin1_1_3_256.png
+Codes/01/datasets/RGB/austin1_1_4_256.png
+Codes/01/datasets/RGB/austin1_1_5_256.png
+Codes/01/datasets/RGB/austin1_1_6_256.png
+Codes/01/datasets/RGB/austin1_1_7_256.png
+Codes/01/datasets/RGB/austin1_1_8_256.png
+Codes/01/datasets/RGB/austin1_1_9_256.png
+Codes/01/datasets/RGB/austin1_2_0_256.png
+Codes/01/datasets/RGB/austin1_2_1_256.png
+Codes/01/datasets/RGB/austin1_2_2_256.png
+Codes/01/datasets/RGB/austin1_2_3_256.png
+Codes/01/datasets/RGB/austin1_2_4_256.png
+Codes/01/datasets/RGB/austin1_2_5_256.png
+Codes/01/datasets/RGB/austin1_2_6_256.png
+Codes/01/datasets/RGB/austin1_2_7_256.png
+Codes/01/datasets/RGB/austin1_2_8_256.png
+Codes/01/datasets/RGB/austin1_2_9_256.png
+Codes/01/docs/tutorial.pdf
+
+Text files:
+.aipack_config.json
+Codes/01/Misc/cache/pytest/Misc__pytest_cache/README.md
+Codes/01/Misc/config.py
+Codes/01/Misc/config_example.yaml
+Codes/01/Misc/config_mgda.yaml
+Codes/01/Misc/config_standard.yaml
+Codes/01/Misc/config_test.yaml
+Codes/01/README.md
+Codes/01/config/__init__.py
+Codes/01/config/config_manager.py
+Codes/01/configs/ablation/no_boundary.yaml
+Codes/01/configs/ablation/no_iou.yaml
+Codes/01/configs/ablation/no_mgda.yaml
+Codes/01/configs/ablation/no_shape.yaml
+Codes/01/configs/default.yaml
+Codes/01/configs/demo_config.yaml
+Codes/01/configs/experiment_config.yaml
+Codes/01/configs/paper_ready_config.yaml
+Codes/01/configs/unet_mgda.yaml
+Codes/01/configs/unet_single.yaml
+Codes/01/configs/unet_weighted.yaml
+Codes/01/configs/unetpp_deepsup_mgda.yaml
+Codes/01/configs/unetpp_mgda.yaml
+Codes/01/configs/unetpp_single.yaml
+Codes/01/configs/unetpp_weighted.yaml
+Codes/01/data/__init__.py
+Codes/01/data/augmentation.py
+Codes/01/data/dataset.py
+Codes/01/data/integrity.py
+Codes/01/data/loader.py
+Codes/01/data/preprocessing.py
+Codes/01/data/splitter.py
+Codes/01/experiments/__init__.py
+Codes/01/experiments/ablation.py
+Codes/01/experiments/comparison.py
+Codes/01/experiments/experiment_runner.py
+Codes/01/experiments/pareto_experiment.py
+Codes/01/experiments/registry.py
+Codes/01/experiments/runner.py
+Codes/01/logging_utils/__init__.py
+Codes/01/logging_utils/csv_logger.py
+Codes/01/logging_utils/json_summary.py
+Codes/01/logging_utils/logger.py
+Codes/01/logging_utils/system_info.py
+Codes/01/logging_utils/tensorboard_logger.py
+Codes/01/losses/__init__.py
+Codes/01/losses/boundary_losses.py
+Codes/01/losses/deep_supervision_loss.py
+Codes/01/losses/loss_manager.py
+Codes/01/losses/pixel_losses.py
+Codes/01/losses/shape_losses.py
+Codes/01/main.py
+Codes/01/models/AttUNet.py
+Codes/01/models/NestedUnet.py
+Codes/01/models/R2AttUNet.py
+Codes/01/models/ResUnet.py
+Codes/01/models/ResUnetPlusPlus.py
+Codes/01/models/SEUnet.py
+Codes/01/models/Unet3p.py
+Codes/01/models/__init__.py
+Codes/01/models/blocks.py
+Codes/01/models/complexity.py
+Codes/01/models/factory.py
+Codes/01/models/model_factory.py
+Codes/01/models/scSEUnet.py
+Codes/01/models/unet.py
+Codes/01/models/unet_pp.py
+Codes/01/models/unetpp.py
+Codes/01/optimization/__init__.py
+Codes/01/optimization/mgda.py
+Codes/01/optimization/pareto.py
+Codes/01/optimization/schedulers.py
+Codes/01/optimization/weighted_sum.py
+Codes/01/plugins/README.md
+Codes/01/plugins/__init__.py
+Codes/01/plugins/loader.py
+Codes/01/plugins/models.py
+Codes/01/plugins/objectives.py
+Codes/01/requirements.txt
+Codes/01/results/test_report.txt
+Codes/01/results/test_timings.json
+Codes/01/run_all.py
+Codes/01/run_tests.py
+Codes/01/scripts/smoke_test.py
+Codes/01/setup.py
+Codes/01/src/__init__.py
+Codes/01/src/evaluate.py
+Codes/01/src/objectives.py
+Codes/01/src/optimize.py
+Codes/01/src/pareto.py
+Codes/01/tests/__init__.py
+Codes/01/tests/test_checkpointing.py
+Codes/01/tests/test_data_loading.py
+Codes/01/tests/test_losses.py
+Codes/01/tests/test_mgda.py
+Codes/01/tests/test_models.py
+Codes/01/tests/test_reproducibility.py
+Codes/01/tests/test_run_all_cli.py
+Codes/01/tests/test_training.py
+Codes/01/tests/test_visualization.py
+Codes/01/training/__init__.py
+Codes/01/training/callbacks.py
+Codes/01/training/checkpoint_manager.py
+Codes/01/training/early_stopping.py
+Codes/01/training/evaluator.py
+Codes/01/training/metrics.py
+Codes/01/training/trainer.py
+Codes/01/training/trainer_mgda.py
+Codes/01/tutorial/quick_start.py
+Codes/01/utils/__init__.py
+Codes/01/utils/config_loader.py
+Codes/01/utils/registry.py
+Codes/01/utils/repro.py
+Codes/01/utils/reproducibility.py
+Codes/01/utils/system.py
+Codes/01/utils/test_reporting.py
+Codes/01/visualization/__init__.py
+Codes/01/visualization/boundary_overlay.py
+Codes/01/visualization/complexity_plot.py
+Codes/01/visualization/error_maps.py
+Codes/01/visualization/latex_tables.py
+Codes/01/visualization/loss_curves.py
+Codes/01/visualization/pareto_plot.py
+Codes/01/visualization/prediction_grid.py
+Codes/01/visualization/style.py
+Codes/01/visualization/visualization.py
+README.md
+
+============================================================
+
+---- FILE: .aipack_config.json
+
+{
+  "include": [],
+  "exclude": [
+    "__pycache__",
+    "notebooks",
+    ".pycache",
+    ".pytest_cache",
+    "tmp",
+    "optional",
+    "jupyter"
+  ]
+}
+
+==== END FILE ====
+---- FILE: Codes/01/Misc/cache/pytest/Misc__pytest_cache/README.md
+
+# pytest cache directory #
+
+This directory contains data from the pytest's cache plugin,
+which provides the `--lf` and `--ff` options, as well as the `cache` fixture.
+
+**Do not** commit this to version control.
+
+See [the docs](https://docs.pytest.org/en/stable/how-to/cache.html) for more information.
+
+
+==== END FILE ====
+---- FILE: Codes/01/Misc/config.py
+
+import os
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+# Default hyperparameter configuration for all experiments.
+# These values can be overridden via YAML config files or CLI arguments.
+DEFAULT_CONFIG = {
+    "mode": "mgda",
+    "model": "unet++",
+    "deep_supervision": False,
+    "pixel_loss": "bce+iou",
+    "boundary_loss": "hausdorff",
+    "shape_loss": "convexity",
+    "pixel_weight": 1.0,
+    "boundary_weight": 1.0,
+    "shape_weight": 1.0,
+    "batch_size": 4,
+    "epochs": 50,
+    "lr": 5e-4,
+    "seed": 42,
+    "verbose": 2,
+    "output_dir": "results",
+    "experiment_name": None,
+    "rgb_glob": "Datasets/RGB/*.png",
+    "mask_glob": "Datasets/Mask/*.tif",
+    "train_split": 0.8,
+    "input_height": 256,
+    "input_width": 256,
+    "input_channels": 3,
+    "log_every": 50,
+    "resume": False,
+}
+
+
+def load_config(path):
+    """Load a YAML configuration file and return a config dictionary."""
+    if yaml is None:
+        raise ImportError("PyYAML is required to load YAML config files. Install it with pip install pyyaml.")
+    with open(path, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+    if not isinstance(config, dict):
+        raise ValueError(f"Config file {path} must define a top-level mapping.")
+    return config
+
+
+def save_config(path, config):
+    """Save a configuration dictionary back to a YAML file."""
+    if yaml is None:
+        raise ImportError("PyYAML is required to save YAML config files. Install it with pip install pyyaml.")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(config, f)
+    return path
+
+
+def merge_config(base, override):
+    """Merge override values into the base config, ignoring None values."""
+    merged = base.copy()
+    for key, value in override.items():
+        if value is None:
+            continue
+        merged[key] = value
+    return merged
+
+
+==== END FILE ====
+---- FILE: Codes/01/Misc/config_example.yaml
+
+mode: mgda
+model: unet++
+deep_supervision: true
+pixel_loss: bce+iou
+boundary_loss: hausdorff
+shape_loss: convexity
+pixel_weight: 1.0
+boundary_weight: 1.0
+shape_weight: 1.0
+batch_size: 4
+epochs: 100
+lr: 0.0005
+seed: 42
+verbose: 2
+output_dir: results
+experiment_name: moss_experiment
+rgb_glob: Datasets/RGB/*.png
+mask_glob: Datasets/Mask/*.tif
+train_split: 0.8
+input_height: 256
+input_width: 256
+input_channels: 3
+log_every: 50
+resume: false
+
+
+==== END FILE ====
+---- FILE: Codes/01/Misc/config_mgda.yaml
+
+mode: mgda
+model: unet++
+deep_supervision: true
+pixel_loss: bce+iou
+boundary_loss: hausdorff
+shape_loss: convexity
+pixel_weight: 1.0
+boundary_weight: 1.0
+shape_weight: 1.0
+batch_size: 4
+epochs: 100
+lr: 0.0005
+seed: 42
+verbose: 2
+output_dir: results
+experiment_name: moss_mgda
+rgb_glob: Datasets/RGB/*.png
+mask_glob: Datasets/Mask/*.tif
+train_split: 0.8
+input_height: 256
+input_width: 256
+input_channels: 3
+log_every: 50
+resume: false
+
+
+==== END FILE ====
+---- FILE: Codes/01/Misc/config_standard.yaml
+
+mode: standard
+model: unet++
+deep_supervision: true
+pixel_loss: bce+iou
+boundary_loss: hausdorff
+shape_loss: convexity
+pixel_weight: 1.0
+boundary_weight: 1.0
+shape_weight: 1.0
+batch_size: 4
+epochs: 100
+lr: 0.0005
+seed: 42
+verbose: 2
+output_dir: results
+experiment_name: moss_standard
+rgb_glob: Datasets/RGB/*.png
+mask_glob: Datasets/Mask/*.tif
+train_split: 0.8
+input_height: 256
+input_width: 256
+input_channels: 3
+resume: false
+
+
+==== END FILE ====
+---- FILE: Codes/01/Misc/config_test.yaml
+
+model_name: "unet"
+epochs: 2
+batch_size: 2
+lr: 0.0001
+deep_supervision: false
+
+losses:
+  - bce
+
+dataset:
+  rgb_glob: "./datasets/RGB/*.png"
+  mask_glob: "./datasets/Mask/*.tif"
+  train_split: 0.5
+
+output_dir: "./results/test_run"
+experiment_name: "quick_verification"
+log_every: 10
+resume: false
+
+==== END FILE ====
+---- FILE: Codes/01/README.md
+
+# Building Segmentation with Multi-Objective Optimization
+
+Publication-oriented framework for building footprint segmentation from RGB
+satellite tiles using TensorFlow, UNet/UNet++, weighted losses, and MGDA.
+
+## Quick Start
+
+```bash
+pip install -r requirements.txt
+python run_all.py --test-only
+python run_all.py --no-pareto
+```
+
+## Dataset Layout
+
+Expected input directories:
+
+- `datasets/RGB/*.png` (RGB images, `256x256x3`)
+- `datasets/Mask/*.tif` (binary masks, `256x256x1`)
+
+Matching is done by basename (`tile_001.png` ↔ `tile_001.tif`).
+
+## Main Commands
+
+```bash
+python run_all.py                          # full pipeline
+python run_all.py --experiment unet_mgda  # single experiment
+python run_all.py --figures-only          # regenerate paper outputs
+python run_tests.py                        # run all tests
+```
+
+## Project Structure
+
+```
+configs/            YAML configs (base + experiment variants)
+data/               data loader, splitter, preprocessing, augmentation
+models/             UNet, UNet++, blocks, complexity
+losses/             pixel/boundary/shape losses + manager
+optimization/       MGDA, Pareto, weighted sum, schedulers
+training/           trainer, evaluator, checkpointing, callbacks
+experiments/        experiment runner, registry, comparison/ablation
+visualization/      figures and LaTeX table helpers
+logging_utils/      console/file/TensorBoard/CSV/JSON logging
+tests/              unit/integration-style tests on synthetic data
+```
+
+## Reproducibility
+
+`utils/reproducibility.py` pins random seeds, enables deterministic TF ops,
+and computes dataset hashes for run tracking.
+
+## Notes
+
+- Figures are saved as PNG + PDF at 300 DPI.
+- Tables are exported as CSV + LaTeX.
+- `main.py` proxies to `run_all.py` for backward compatibility.
+
+
+==== END FILE ====
+---- FILE: Codes/01/config/__init__.py
+
+"""Configuration management module for MOO framework."""
+from .config_manager import ConfigManager, create_default_config, ExperimentConfig
+
+__all__ = ['ConfigManager', 'create_default_config', 'ExperimentConfig']
+
+==== END FILE ====
+---- FILE: Codes/01/config/config_manager.py
+
+"""Configuration management for multi-objective optimization experiments.
+
+This module provides comprehensive configuration management with support for
+YAML-based experiment definitions, hyperparameter grids, and experiment tracking.
+"""
+
+import os
+import yaml
+import hashlib
+import json
+import numpy as np
+from datetime import datetime
+from typing import Dict, Any, List, Tuple, Optional
+from dataclasses import dataclass, asdict, field
+import itertools
+
+
+@dataclass
+class ExperimentConfig:
+    """Configuration for a single experiment run.
+    
+    Attributes
+    ----------
+    experiment_id : str
+        Unique identifier for this experiment
+    architecture : str
+        Model architecture name (e.g., 'Unet', 'UnetPlusPlus')
+    encoder : str
+        Encoder backbone name (e.g., 'resnet34', 'efficientnetb0')
+    encoder_weights : str
+        Pretrained weights for encoder ('imagenet' or None)
+    loss_function : str
+        Loss function name
+    optimizer : str
+        Optimizer name ('Adam', 'SGD')
+    learning_rate : float
+        Learning rate for training
+    batch_size : int
+        Batch size for training
+    epochs : int
+        Number of training epochs
+    seed : int
+        Random seed for reproducibility
+    tile_size : int
+        Input image tile size
+    augmentation : List[str]
+        List of augmentation techniques
+    """
+    experiment_id: str = ""
+    architecture: str = "Unet"
+    encoder: str = "resnet34"
+    encoder_weights: str = "imagenet"
+    loss_function: str = "binary_crossentropy"
+    optimizer: str = "Adam"
+    learning_rate: float = 1e-3
+    batch_size: int = 8
+    epochs: int = 50
+    seed: int = 42
+    tile_size: int = 256
+    augmentation: List[str] = field(default_factory=lambda: ["flip", "rotate"])
+    scheduler: str = "ReduceLROnPlateau"
+    
+    def __post_init__(self):
+        """Generate experiment ID if not provided."""
+        self.learning_rate = float(self.learning_rate)
+        self.batch_size = int(self.batch_size)
+        self.epochs = int(self.epochs)
+        self.seed = int(self.seed)
+        self.tile_size = int(self.tile_size)
+        if not self.experiment_id:
+            self.experiment_id = self.generate_id()
+    
+    def generate_id(self) -> str:
+        """Generate a unique experiment ID based on configuration."""
+        config_str = f"{self.architecture}_{self.encoder}_{self.loss_function}_{self.optimizer}_" \
+                    f"lr{self.learning_rate}_bs{self.batch_size}_ep{self.epochs}_seed{self.seed}"
+        hash_obj = hashlib.md5(config_str.encode())
+        short_hash = hash_obj.hexdigest()[:8]
+        return f"{config_str}_{short_hash}"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert configuration to dictionary."""
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ExperimentConfig':
+        """Create configuration from dictionary."""
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+class ConfigManager:
+    """Manager for experiment configurations and hyperparameter grids.
+    
+    This class handles loading, validation, and expansion of configuration
+    files for multi-objective optimization experiments.
+    
+    Parameters
+    ----------
+    config_path : str
+        Path to the YAML configuration file
+    
+    Attributes
+    ----------
+    config : Dict[str, Any]
+        Loaded configuration dictionary
+    experiment_configs : List[ExperimentConfig]
+        List of all experiment configurations from grid expansion
+    """
+    
+    def __init__(self, config_path: str):
+        self.config_path = config_path
+        self.config = self.load_config()
+        self.experiment_configs: List[ExperimentConfig] = []
+        self._expand_grid()
+    
+    def load_config(self) -> Dict[str, Any]:
+        """Load configuration from YAML file.
+        
+        Returns
+        -------
+        Dict[str, Any]
+            Configuration dictionary
+        
+        Raises
+        ------
+        FileNotFoundError
+            If config file doesn't exist
+               ValueError
+            If config file is invalid
+        """
+        if not os.path.exists(self.config_path):
+            raise FileNotFoundError(f"Configuration file not found: {self.config_path}")
+        
+        with open(self.config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        
+        if not isinstance(config, dict):
+            raise ValueError(f"Configuration file must contain a dictionary")
+        
+        self._validate_config(config)
+        return config
+    
+    def _validate_config(self, config: Dict[str, Any]) -> None:
+        """Validate configuration structure.
+        
+        Parameters
+        ----------
+        config : Dict[str, Any]
+            Configuration dictionary to validate
+        
+        Raises
+        ------
+        ValueError
+            If configuration is invalid
+        """
+        required_sections = ['experiment', 'dataset', 'models', 'training', 'multi_objective']
+        for section in required_sections:
+            if section not in config:
+                raise ValueError(f"Missing required configuration section: '{section}'")
+        
+        # Validate models section
+        models = config.get('models', {})
+        if 'architectures' not in models or not models['architectures']:
+            raise ValueError("Configuration must specify at least one model architecture")
+        if 'encoders' not in models or not models['encoders']:
+            raise ValueError("Configuration must specify at least one encoder")
+        
+        # Validate training section
+        training = config.get('training', {})
+        required_training = ['loss_functions', 'optimizers', 'learning_rates', 'batch_sizes', 'epochs']
+        for key in required_training:
+            if key not in training or not training[key]:
+                raise ValueError(f"Training configuration must specify '{key}'")
+    
+    def _expand_grid(self) -> None:
+        """Expand hyperparameter grid into individual experiment configurations."""
+        models = self.config.get('models', {})
+        training = self.config.get('training', {})
+        dataset = self.config.get('dataset', {})
+        experiment = self.config.get('experiment', {})
+        
+        # Get all hyperparameter lists
+        architectures = models.get('architectures', ['Unet'])
+        encoders = models.get('encoders', ['resnet34'])
+        encoder_weights_list = models.get('encoder_weights', ['imagenet'])
+        loss_functions = training.get('loss_functions', ['binary_crossentropy'])
+        optimizers = training.get('optimizers', ['Adam'])
+        learning_rates = training.get('learning_rates', [1e-3])
+        batch_sizes = training.get('batch_sizes', [8])
+        epochs_list = training.get('epochs', [50])
+        schedulers = training.get('schedulers', ['ReduceLROnPlateau'])
+        seeds = experiment.get('seed', [42])
+        tile_sizes = dataset.get('tile_size', [256])
+        augmentations = dataset.get('augmentations', [['flip', 'rotate']])
+        
+        # Generate all combinations
+        grid = itertools.product(
+            architectures, encoders, encoder_weights_list,
+            loss_functions, optimizers, learning_rates,
+            batch_sizes, epochs_list, schedulers, seeds, tile_sizes, augmentations
+        )
+        
+        for combo in grid:
+            (arch, enc, enc_w, loss, opt, lr, bs, ep, sched, seed, tile, aug) = combo
+            
+            exp_config = ExperimentConfig(
+                architecture=arch,
+                encoder=enc,
+                encoder_weights=enc_w,
+                loss_function=loss,
+                optimizer=opt,
+                learning_rate=lr,
+                batch_size=bs,
+                epochs=ep,
+                scheduler=sched,
+                seed=seed,
+                tile_size=tile,
+                augmentation=list(aug) if isinstance(aug, (list, tuple)) else [aug]
+            )
+            self.experiment_configs.append(exp_config)
+    
+    def get_experiment_configs(self, mode: str = 'full') -> List[ExperimentConfig]:
+        """Get experiment configurations based on mode.
+        
+        Parameters
+        ----------
+        mode : str
+            'full' for all configurations, 'quick' for subset
+        
+        Returns
+        -------
+        List[ExperimentConfig]
+            List of experiment configurations
+        """
+        if mode == 'quick':
+            # Return a representative subset
+            subset_size = min(10, len(self.experiment_configs))
+            indices = np.linspace(0, len(self.experiment_configs) - 1, subset_size, dtype=int)
+            return [self.experiment_configs[i] for i in indices]
+        return self.experiment_configs
+    
+    def get_dataset_config(self) -> Dict[str, Any]:
+        """Get dataset configuration section."""
+        return self.config.get('dataset', {})
+    
+    def get_moo_config(self) -> Dict[str, Any]:
+        """Get multi-objective optimization configuration section."""
+        return self.config.get('multi_objective', {})
+    
+    def get_experiment_name(self) -> str:
+        """Get experiment name from configuration."""
+        return self.config.get('experiment', {}).get('name', 'building_footprint_moo')
+    
+    def save_results_table(self, results: List[Dict[str, Any]], output_dir: str) -> 'pd.DataFrame':
+        """Save results to CSV and return DataFrame.
+        
+        Parameters
+        ----------
+        results : List[Dict[str, Any]]
+            List of result dictionaries
+        output_dir : str
+            Directory to save the CSV file
+        
+        Returns
+        -------
+        pd.DataFrame
+            Results DataFrame
+        """
+        import pandas as pd
+        
+        os.makedirs(output_dir, exist_ok=True)
+        df = pd.DataFrame(results)
+        
+        csv_path = os.path.join(output_dir, 'results.csv')
+        df.to_csv(csv_path, index=False)
+        
+        return df
+    
+    def save_latex_table(self, df: 'pd.DataFrame', output_path: str) -> None:
+        """Save results as LaTeX table.
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Results DataFrame
+        output_path : str
+            Path to save LaTeX file
+        """
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        # Select and format columns for publication
+        pub_columns = ['experiment_id', 'architecture', 'encoder', 'loss_function',
+                       'learning_rate', 'batch_size', 'iou', 'f1_score', 
+                       'param_count', 'flops', 'inference_time']
+        
+        pub_df = df[[col for col in pub_columns if col in df.columns]].copy()
+        
+        # Format numeric columns
+        numeric_cols = ['learning_rate', 'iou', 'f1_score']
+        for col in numeric_cols:
+            if col in pub_df.columns:
+                pub_df[col] = pub_df[col].apply(lambda x: f"{x:.4f}")
+        
+        # Format large numbers
+        if 'param_count' in pub_df.columns:
+            pub_df['param_count'] = pub_df['param_count'].apply(
+                lambda x: f"{x/1e6:.2f}M" if x >= 1e6 else f"{x/1e3:.2f}K"
+            )
+        if 'flops' in pub_df.columns:
+            pub_df['flops'] = pub_df['flops'].apply(
+                lambda x: f"{x/1e9:.2f}G" if x >= 1e9 else f"{x/1e6:.2f}M"
+            )
+        
+        # Generate LaTeX
+        latex_str = pub_df.to_latex(index=False, escape=False, 
+                                     caption='Multi-Objective Optimization Results',
+                                     label='tab:moo_results')
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(latex_str)
+    
+    def save_config(self, output_path: str) -> None:
+        """Save current configuration to YAML file.
+        
+        Parameters
+        ----------
+        output_path : str
+            Path to save configuration
+        """
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            yaml.dump(self.config, f, default_flow_style=False)
+
+
+# Default configuration template
+DEFAULT_CONFIG_TEMPLATE = """
+experiment:
+  name: "building_footprint_moo"
+  seed: [42, 123, 456]
+  description: "Multi-objective optimization for building footprint extraction"
+
+dataset:
+  name: "Inria Aerial"
+  tile_size: [256, 512]
+  augmentations:
+    - [flip, rotate]
+    - [flip, rotate, brightness]
+    - [flip, rotate, brightness, elastic_transform]
+  train_val_test_split: [0.7, 0.15, 0.15]
+  rgb_path: "Datasets/RGB"
+  mask_path: "Datasets/Mask"
+
+models:
+  architectures: [Unet, UnetPlusPlus, FPN, Linknet, DeepLabV3Plus]
+  encoders: [resnet34, resnet50, efficientnetb0, efficientnetb3, vgg16]
+  encoder_weights: [imagenet]
+
+training:
+  loss_functions: [binary_crossentropy, dice_loss, focal_loss, combo_loss]
+  optimizers: [Adam, SGD]
+  learning_rates: [1e-3, 1e-4, 5e-4]
+  batch_sizes: [8, 16]
+  epochs: [50, 100]
+  schedulers: [ReduceLROnPlateau, CosineAnnealing]
+
+multi_objective:
+  objectives: [iou, f1_score, param_count, flops, inference_time]
+  optimization_method: "NSGA-II"
+  population_size: 50
+  generations: 100
+  pareto_front: true
+  reference_point: [0.0, 0.0, 1e9, 1e12, 1000]  # For hypervolume calculation
+"""
+
+
+def create_default_config(output_path: str) -> None:
+    """Create a default configuration file.
+    
+    Parameters
+    ----------
+    output_path : str
+        Path to save the default configuration
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(DEFAULT_CONFIG_TEMPLATE)
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/ablation/no_boundary.yaml
+
+inherits: "../unetpp_mgda.yaml"
+
+loss:
+  boundary:
+    enabled: false
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/ablation/no_iou.yaml
+
+inherits: ../default.yaml
+loss:
+  pixel:
+    type: bce
+*** End Patch
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/ablation/no_mgda.yaml
+
+inherits: ../unetpp_mgda.yaml
+
+loss:
+  strategy: "weighted"
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/ablation/no_shape.yaml
+
+inherits: ../default.yaml
+model:
+  architecture: "unetpp"
+loss:
+  strategy: "mgda"
+  shape:
+    enabled: false
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/default.yaml
+
+project:
+  name: "building_segmentation_moo"
+  seed: 42
+  deterministic: true
+
+data:
+  rgb_dir: "datasets/RGB"
+  mask_dir: "datasets/Mask"
+  image_size: 256
+  batch_size: 4
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+  num_workers: 4
+  prefetch_buffer: 2
+  building_density_bins: 3
+
+augmentation:
+  enabled: true
+  horizontal_flip: true
+  vertical_flip: true
+  random_rotation: true
+  brightness_range: 0.1
+  contrast_range: 0.1
+
+model:
+  architecture: "unet"
+  encoder_filters: [64, 128, 256, 512, 1024]
+  dropout_rate: 0.3
+  batch_norm: true
+  activation: "relu"
+  output_activation: "sigmoid"
+  deep_supervision: false
+
+loss:
+  strategy: "single"
+  pixel:
+    type: "bce_iou"
+    weight: 1.0
+    bce_iou_alpha: 0.5
+  boundary:
+    enabled: true
+    type: "hausdorff_approx"
+    weight: 0.3
+    distance_threshold: 3
+  shape:
+    enabled: true
+    type: "convexity"
+    weight: 0.1
+  deep_supervision:
+    enabled: false
+    weights: [0.5, 0.3, 0.2, 0.1]
+
+mgda:
+  enabled: false
+  solver: "frank_wolfe"
+  max_iterations: 50
+  tolerance: 1.0e-6
+  normalize_gradients: true
+  log_alphas: true
+
+training:
+  epochs: 10
+  optimizer: "adam"
+  learning_rate: 1.0e-4
+  lr_scheduler:
+    type: "cosine"
+    warmup_epochs: 2
+    min_lr: 1.0e-7
+  early_stopping:
+    enabled: true
+    monitor: "val_iou"
+    patience: 5
+    mode: "max"
+    min_delta: 1.0e-4
+  gradient_clip_norm: 1.0
+
+checkpointing:
+  save_every_n_epochs: 5
+  save_best: true
+  best_metric: "val_iou"
+  save_optimizer: true
+  save_mgda_state: true
+  auto_resume: true
+
+logging:
+  console_level: "INFO"
+  file_level: "DEBUG"
+  tensorboard: true
+  csv_logging: true
+  log_gradient_norms: true
+  log_mgda_alphas: true
+  validation_image_interval: 5
+
+evaluation:
+  metrics:
+    - "iou"
+    - "dice"
+    - "precision"
+    - "recall"
+    - "f1"
+    - "pixel_accuracy"
+  complexity_metrics:
+    - "parameter_count"
+    - "flops"
+    - "inference_time_ms"
+  test_time_augmentation: false
+
+visualization:
+  dpi: 300
+  formats: ["pdf", "png"]
+  font_family: "serif"
+  font_size: 10
+  figure_width_inches: 7.0
+  colormap: "RdYlGn"
+  prediction_grid_samples: 8
+  boundary_overlay_samples: 6
+
+export:
+  results_dir: "results"
+  latex_tables: true
+  csv_tables: true
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/demo_config.yaml
+
+# Demo Configuration for Quick Testing
+# Building Footprint Multi-Objective Optimization
+
+experiment:
+  name: "building_footprint_demo"
+  seed: [42]
+  description: "Quick demo run for testing framework"
+
+dataset:
+  name: "Inria Aerial"
+  rgb_path: "Datasets/RGB"
+  mask_path: "Datasets/Mask"
+  tile_size: [256]
+  augmentations:
+    - [flip, rotate]
+  train_val_test_split: [0.7, 0.15, 0.15]
+
+models:
+  architectures: [Unet, UnetPlusPlus]
+  encoders: [resnet34]
+  encoder_weights: [imagenet]
+
+training:
+  loss_functions: [binary_crossentropy, dice_loss]
+  optimizers: [Adam]
+  learning_rates: [1e-3]
+  batch_sizes: [4]
+  epochs: [2]  # Just 2 epochs for demo
+  schedulers: [ReduceLROnPlateau]
+  early_stopping:
+    enabled: true
+    patience: 3
+    min_delta: 0.001
+
+multi_objective:
+  objectives: [paper_quality, boundary_iou, param_count, inference_time]
+  optimization_method: "grid_search"  # Faster than NSGA-II for demo
+  population_size: 10
+  generations: 3
+  pareto_front: true
+
+extensions:
+  plugin_modules:
+    - plugins.objectives
+    - plugins.models
+
+evaluation:
+  metrics:
+    - iou
+    - f1_score
+    - precision
+    - recall
+    - accuracy
+  inference_runs: 10
+  warmup_runs: 5
+
+output:
+  base_dir: "outputs"
+  save_format: "png"
+  dpi: 150
+  figure_format: "presentation"
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/experiment_config.yaml
+
+# Multi-Objective Optimization Configuration
+# Building Footprint Recognition from Aerial/Satellite Imagery
+
+experiment:
+  name: "building_footprint_moo"
+  seed: [42, 123, 456]
+  description: "Multi-objective optimization for building footprint extraction using semantic segmentation"
+  save_predictions: true
+  save_checkpoints: true
+
+dataset:
+  name: "Inria Aerial"
+  rgb_path: "datasets/RGB"
+  mask_path: "datasets/Mask"
+  tile_size: [256, 512]
+  augmentations:
+    - [flip, rotate]
+    - [flip, rotate, brightness]
+    - [flip, rotate, brightness, elastic_transform]
+  train_val_test_split: [0.7, 0.15, 0.15]
+  normalize: true
+  preload: false
+
+models:
+  architectures: [Unet, UnetPlusPlus, FPN, Linknet]
+  encoders: [resnet34, resnet50, efficientnetb0, efficientnetb3]
+  encoder_weights: [imagenet]
+  activation: sigmoid
+  deep_supervision: false
+
+training:
+  loss_functions: [binary_crossentropy, dice_loss, focal_loss, combo_loss]
+  optimizers: [Adam, SGD]
+  learning_rates: [1e-3, 1e-4, 5e-4]
+  batch_sizes: [8, 16]
+  epochs: [50, 100]
+  schedulers: [ReduceLROnPlateau, CosineAnnealing]
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 0.001
+  mixed_precision: true
+
+multi_objective:
+  objectives: [paper_quality, boundary_iou, param_count, inference_time]
+  optimization_method: "NSGA-II"  # Options: "NSGA-II", "grid_search"
+  population_size: 50
+  generations: 100
+  evaluation_epochs: 1
+  quick_max_configs: 4
+  quick_inference_runs: 5
+  quick_warmup_runs: 2
+  crossover_prob: 0.9
+  mutation_prob: 0.1
+  pareto_front: true
+  reference_point: [0.0, 0.0, 1e9, 1e12, 1000]  # For hypervolume calculation
+
+extensions:
+  plugin_modules:
+    - plugins.objectives
+    - plugins.models
+
+evaluation:
+  metrics:
+    - iou
+    - f1_score
+    - precision
+    - recall
+    - accuracy
+    - boundary_iou
+    - boundary_f1
+  inference_runs: 100
+  warmup_runs: 10
+
+output:
+  base_dir: "outputs"
+  save_format: "png"
+  dpi: 300
+  figure_format: "publication"  # Options: "publication", "presentation"
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/paper_ready_config.yaml
+
+# Paper-ready configuration for multi-objective building footprint experiments
+
+experiment:
+  name: "building_footprint_paper"
+  seed: [42, 123, 456]
+  description: "Paper-ready multi-objective experiment with extensible plugin objectives and model registry"
+  save_predictions: true
+  save_checkpoints: true
+
+dataset:
+  name: "Inria Aerial"
+  rgb_path: "datasets/RGB"
+  mask_path: "datasets/Mask"
+  tile_size: [256]
+  augmentations:
+    - [flip, rotate]
+    - [flip, rotate, brightness]
+  train_val_test_split: [0.7, 0.15, 0.15]
+  normalize: true
+  preload: false
+
+models:
+  architectures: [Unet, UnetPlusPlus, TinyPaperUNet]
+  encoders: [resnet34, resnet50]
+  encoder_weights: [imagenet, null]
+  activation: sigmoid
+  deep_supervision: false
+
+training:
+  loss_functions: [dice_loss, combo_loss]
+  optimizers: [Adam]
+  learning_rates: [1e-3, 5e-4]
+  batch_sizes: [4, 8]
+  epochs: [30]
+  schedulers: [ReduceLROnPlateau]
+  early_stopping:
+    enabled: true
+    patience: 8
+    min_delta: 0.001
+  mixed_precision: true
+
+multi_objective:
+  objectives: [paper_quality, boundary_iou, param_count, inference_time]
+  optimization_method: "grid_search"
+  evaluation_epochs: 10
+  quick_max_configs: 4
+  quick_inference_runs: 5
+  quick_warmup_runs: 2
+  population_size: 24
+  generations: 20
+  pareto_front: true
+
+extensions:
+  plugin_modules:
+    - plugins.objectives
+    - plugins.models
+
+evaluation:
+  metrics:
+    - iou
+    - f1_score
+    - precision
+    - recall
+    - accuracy
+    - boundary_iou
+    - boundary_f1
+  inference_runs: 30
+  warmup_runs: 5
+
+output:
+  base_dir: "outputs"
+  save_format: "png"
+  dpi: 300
+  figure_format: "publication"
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/unet_mgda.yaml
+
+inherits: default.yaml
+model:
+  architecture: "unet"
+loss:
+  strategy: "mgda"
+mgda:
+  enabled: true
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/unet_single.yaml
+
+inherits: default.yaml
+model:
+  architecture: "unet"
+loss:
+  strategy: "single"
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/unet_weighted.yaml
+
+inherits: "default.yaml"
+
+model:
+  architecture: "unet"
+
+loss:
+  strategy: "weighted"
+
+mgda:
+  enabled: false
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/unetpp_deepsup_mgda.yaml
+
+inherits: default.yaml
+
+model:
+  architecture: "unetpp"
+  deep_supervision: true
+
+loss:
+  strategy: "mgda"
+  deep_supervision:
+    enabled: true
+    weights: [0.5, 0.3, 0.2, 0.1]
+
+mgda:
+  enabled: true
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/unetpp_mgda.yaml
+
+inherits: default.yaml
+
+model:
+  architecture: "unetpp"
+
+loss:
+  strategy: "mgda"
+
+mgda:
+  enabled: true
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/unetpp_single.yaml
+
+inherits: default.yaml
+
+model:
+  architecture: "unetpp"
+
+loss:
+  strategy: "single"
+
+mgda:
+  enabled: false
+
+
+==== END FILE ====
+---- FILE: Codes/01/configs/unetpp_weighted.yaml
+
+inherits: "default.yaml"
+
+model:
+  architecture: "unetpp"
+  deep_supervision: false
+
+loss:
+  strategy: "weighted"
+
+
+==== END FILE ====
+---- FILE: Codes/01/data/__init__.py
+
+"""Data package for building segmentation experiments."""
+
+try:
+    from .dataset import BuildingDataset
+except ModuleNotFoundError:  # pragma: no cover - allows env checks before TF install
+    BuildingDataset = None
+try:
+    from .loader import BuildingSegmentationDataset, DatasetConfig
+except ModuleNotFoundError:  # pragma: no cover - allows env checks before TF install
+    BuildingSegmentationDataset = None
+    DatasetConfig = None
+from .splitter import StratifiedSplitter
+from .integrity import compute_dataset_hash
+
+__all__ = [
+    "BuildingDataset",
+    "BuildingSegmentationDataset",
+    "DatasetConfig",
+    "StratifiedSplitter",
+    "compute_dataset_hash",
+]
+
+
+==== END FILE ====
+---- FILE: Codes/01/data/augmentation.py
+
+"""TensorFlow augmentation pipeline for image-mask pairs.
+
+This module keeps compatibility wrappers consumed by the legacy dataset class.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
+
+import numpy as np
+import tensorflow as tf
+
+
+@dataclass
+class AugmentationConfig:
+    """Configuration subset required by the tf.data augmentation pipeline."""
+
+    horizontal_flip: bool = True
+    vertical_flip: bool = True
+    random_rotation: bool = True
+    brightness_range: float = 0.1
+    contrast_range: float = 0.1
+    seed: int = 42
+
+
+def _maybe_flip(
+    image: tf.Tensor,
+    mask: tf.Tensor,
+    prob: tf.Tensor,
+    horizontal: bool,
+) -> tuple[tf.Tensor, tf.Tensor]:
+    def flipped() -> tuple[tf.Tensor, tf.Tensor]:
+        if horizontal:
+            return tf.image.flip_left_right(image), tf.image.flip_left_right(mask)
+        return tf.image.flip_up_down(image), tf.image.flip_up_down(mask)
+
+    return tf.cond(prob < 0.5, flipped, lambda: (image, mask))
+
+
+def build_augmentation_pipeline(
+    config: AugmentationConfig | dict,
+) -> Callable[[tf.Tensor, tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
+    """Return a map-compatible augmentation callable.
+
+    Spatial transforms are applied identically to image and mask.
+    """
+    if isinstance(config, dict):
+        config = AugmentationConfig(
+            horizontal_flip=bool(config.get("horizontal_flip", True)),
+            vertical_flip=bool(config.get("vertical_flip", True)),
+            random_rotation=bool(config.get("random_rotation", True)),
+            brightness_range=float(config.get("brightness_range", 0.1)),
+            contrast_range=float(config.get("contrast_range", 0.1)),
+            seed=int(config.get("seed", 42)),
+        )
+
+    def _make_seed(image: tf.Tensor, mask: tf.Tensor) -> tf.Tensor:
+        """Create a stateless RNG seed of shape ``[2]`` for TF 2.10+."""
+        image_token = tf.cast(tf.reduce_sum(tf.cast(image * 255.0, tf.int64)), tf.int32)
+        mask_token = tf.cast(tf.reduce_sum(tf.cast(mask * 255.0, tf.int64)), tf.int32)
+        mixed = tf.math.floormod(image_token ^ mask_token, tf.constant(2**31 - 1, dtype=tf.int32))
+        return tf.stack([tf.constant(config.seed, dtype=tf.int32), mixed], axis=0)
+
+    def augment(image: tf.Tensor, mask: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+        random_values = tf.random.stateless_uniform(
+            shape=[5],
+            seed=_make_seed(image, mask),
+            minval=0.0,
+            maxval=1.0,
+            dtype=tf.float32,
+        )
+
+        if config.horizontal_flip:
+            image, mask = _maybe_flip(image, mask, random_values[0], horizontal=True)
+
+        if config.vertical_flip:
+            image, mask = _maybe_flip(image, mask, random_values[1], horizontal=False)
+
+        if config.random_rotation:
+            k = tf.cast(tf.floor(random_values[2] * 4.0), tf.int32)
+            image = tf.image.rot90(image, k=k)
+            mask = tf.image.rot90(mask, k=k)
+
+        brightness_delta = (random_values[3] * 2.0 - 1.0) * tf.constant(
+            config.brightness_range,
+            dtype=tf.float32,
+        )
+        contrast_factor = 1.0 + (random_values[4] * 2.0 - 1.0) * tf.constant(
+            config.contrast_range,
+            dtype=tf.float32,
+        )
+
+        image = tf.image.adjust_brightness(image, brightness_delta)
+        image = tf.image.adjust_contrast(image, contrast_factor)
+        image = tf.clip_by_value(image, 0.0, 1.0)
+        mask = tf.clip_by_value(mask, 0.0, 1.0)
+        return image, mask
+
+    return augment
+
+
+class AugmentationPipeline:
+    """Backward-compatible augmentation wrapper for NumPy arrays."""
+
+    def __init__(
+        self,
+        augmentation_config: Optional[list[str] | str] = None,
+        input_shape: tuple[int, int] = (256, 256),
+        seed: int = 42,
+    ) -> None:
+        del input_shape  # Kept for compatibility with previous signature.
+        if isinstance(augmentation_config, str):
+            requested = {item.strip().lower() for item in augmentation_config.split(",")}
+        elif isinstance(augmentation_config, (list, tuple)):
+            requested = {str(item).strip().lower() for item in augmentation_config}
+        else:
+            requested = {"flip", "rotate"}
+        self._augment = build_augmentation_pipeline(
+            AugmentationConfig(
+                horizontal_flip=("flip" in requested or "horizontal_flip" in requested),
+                vertical_flip=("vertical_flip" in requested or "flip" in requested),
+                random_rotation=("rotate" in requested or "rotation" in requested),
+                brightness_range=0.1 if "brightness" in requested else 0.0,
+                contrast_range=0.1 if "contrast" in requested else 0.0,
+                seed=seed,
+            )
+        )
+
+    def __call__(
+        self,
+        image: np.ndarray,
+        mask: Optional[np.ndarray] = None,
+        **_: Any,
+    ) -> tuple[np.ndarray, Optional[np.ndarray]]:
+        if mask is None:
+            return image.astype(np.float32), None
+        image_tensor = tf.convert_to_tensor(image, dtype=tf.float32)
+        mask_tensor = tf.convert_to_tensor(mask, dtype=tf.float32)
+        aug_image, aug_mask = self._augment(image_tensor, mask_tensor)
+        return aug_image.numpy().astype(np.float32), aug_mask.numpy().astype(np.float32)
+
+
+def build_augmentation_from_config(config: dict[str, Any]) -> Optional[AugmentationPipeline]:
+    """Backward-compatible config factory used by legacy dataset code."""
+    augmentations = config.get("augmentations")
+    if augmentations in (None, [], "none", False):
+        return None
+    seed = int(config.get("seed", 42))
+    tile_size = int(config.get("tile_size", 256))
+    return AugmentationPipeline(augmentations, input_shape=(tile_size, tile_size), seed=seed)
+
+
+def create_augmentation_pipeline(
+    augmentation_config: Optional[list[str] | str] = None,
+    input_shape: tuple[int, int] = (256, 256),
+    seed: Optional[int] = None,
+) -> AugmentationPipeline:
+    """Backward-compatible alias used by older modules."""
+    return AugmentationPipeline(
+        augmentation_config=augmentation_config,
+        input_shape=input_shape,
+        seed=42 if seed is None else int(seed),
+    )
+
+
+def get_available_augmentations() -> list[str]:
+    """Return supported augmentation labels."""
+    return [
+        "flip",
+        "horizontal_flip",
+        "vertical_flip",
+        "rotate",
+        "random_rotation",
+        "brightness",
+        "contrast",
+    ]
+
+
+==== END FILE ====
+---- FILE: Codes/01/data/dataset.py
+
+"""Dataset utilities for building footprint segmentation.
+
+This module provides dataset classes and utilities for loading and
+processing aerial/satellite imagery with building masks.
+"""
+
+import os
+import hashlib
+import glob
+import math
+import numpy as np
+from typing import List, Tuple, Optional, Callable, Dict, Any, Union
+from tensorflow.keras.utils import Sequence
+
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+try:
+    from .augmentation import AugmentationPipeline, build_augmentation_from_config
+    AUGMENTATION_AVAILABLE = True
+except ImportError:
+    AUGMENTATION_AVAILABLE = False
+
+
+def _import_cv2():
+    """Import cv2 with error handling."""
+    if not CV2_AVAILABLE:
+        raise ImportError(
+            "opencv-python is required for image loading. "
+            "Install it with: pip install opencv-python"
+        )
+    import cv2
+    return cv2
+
+
+def load_rgb_image(path: str, normalize: bool = True) -> np.ndarray:
+    """Load an RGB image from file.
+    
+    Parameters
+    ----------
+    path : str
+        Path to the image file
+    normalize : bool
+        Whether to normalize to [0, 1] range
+    
+    Returns
+    -------
+    np.ndarray
+        Loaded image as float32 array with shape (H, W, 3)
+    
+    Raises
+    ------
+    FileNotFoundError
+        If image cannot be loaded
+    """
+    if CV2_AVAILABLE:
+        cv2 = _import_cv2()
+        image = cv2.imread(path, cv2.IMREAD_COLOR)
+        if image is None:
+            raise FileNotFoundError(f"RGB image not found or could not be loaded: {path}")
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    elif PIL_AVAILABLE:
+        with Image.open(path) as image_file:
+            image = np.array(image_file.convert("RGB"))
+    else:
+        raise ImportError(
+            "Image loading requires either opencv-python or Pillow. "
+            "Install one of them to load RGB images."
+        )
+    
+    if normalize:
+        image = image.astype(np.float32) / 255.0
+    
+    return image
+
+
+def load_mask_image(path: str, normalize: bool = True) -> np.ndarray:
+    """Load a mask image from file.
+    
+    Parameters
+    ----------
+    path : str
+        Path to the mask file
+    normalize : bool
+        Whether to normalize to [0, 1] range
+    
+    Returns
+    -------
+    np.ndarray
+        Loaded mask as float32 array with shape (H, W, 1)
+    
+    Raises
+    ------
+    FileNotFoundError
+        If mask cannot be loaded
+    """
+    if CV2_AVAILABLE:
+        cv2 = _import_cv2()
+        mask = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            raise FileNotFoundError(f"Mask image not found or could not be loaded: {path}")
+    elif PIL_AVAILABLE:
+        with Image.open(path) as mask_file:
+            mask = np.array(mask_file.convert("L"))
+    else:
+        raise ImportError(
+            "Mask loading requires either opencv-python or Pillow. "
+            "Install one of them to load masks."
+        )
+    
+    if normalize:
+        mask = mask.astype(np.float32) / 255.0
+    
+    mask = np.clip(mask, 0.0, 1.0)
+    mask = np.expand_dims(mask, axis=-1)
+    
+    return mask
+
+
+def pair_files_by_filename(
+    rgb_files: List[str], 
+    mask_files: List[str],
+    rgb_pattern: str = "*",
+    mask_pattern: str = "*"
+) -> List[Tuple[str, str]]:
+    """Pair RGB and mask files by matching filenames.
+    
+    This function matches files based on their base filenames (without extension),
+    which is the expected format for the dataset where files are paired by filename.
+    
+    Parameters
+    ----------
+    rgb_files : List[str]
+        List of RGB image file paths
+    mask_files : List[str]
+        List of mask file paths
+    rgb_pattern : str
+        Pattern to filter RGB files
+    mask_pattern : str
+        Pattern to filter mask files
+    
+    Returns
+    -------
+    List[Tuple[str, str]]
+        List of paired (rgb_file, mask_file) tuples
+    
+    Raises
+    ------
+    ValueError
+        If no valid pairs are found
+    """
+    # Create lookup by basename without extension
+    mask_lookup = {}
+    for mask_path in mask_files:
+        basename = os.path.splitext(os.path.basename(mask_path))[0]
+        mask_lookup[basename] = mask_path
+    
+    pairs = []
+    unmatched_rgb = []
+    
+    for rgb_path in rgb_files:
+        basename = os.path.splitext(os.path.basename(rgb_path))[0]
+        
+        if basename in mask_lookup:
+            pairs.append((rgb_path, mask_lookup[basename]))
+        else:
+            unmatched_rgb.append(rgb_path)
+    
+    if not pairs:
+        raise ValueError(
+            f"No valid RGB-mask pairs found. "
+            f"RGB files: {len(rgb_files)}, Mask files: {len(mask_files)}. "
+            f"Unmatched RGB: {unmatched_rgb[:5]}"
+        )
+    
+    return pairs
+
+
+def load_dataset_files(
+    rgb_glob: str,
+    mask_glob: str,
+    rgb_pattern: str = "*",
+    mask_pattern: str = "*"
+) -> Tuple[List[str], List[str]]:
+    """Load and pair dataset files using glob patterns.
+    
+    Parameters
+    ----------
+    rgb_glob : str
+        Glob pattern for RGB files (e.g., "./Datasets/RGB/*.png")
+    mask_glob : str
+        Glob pattern for mask files (e.g., "./Datasets/Mask/*.tif")
+    rgb_pattern : str
+        Pattern to filter RGB files
+    mask_pattern : str
+        Pattern to filter mask files
+    
+    Returns
+    -------
+    Tuple[List[str], List[str]]
+        Tuple of (rgb_files, mask_files) lists
+    
+    Raises
+    ------
+    ValueError
+        If no files found or no valid pairs
+    """
+    rgb_files = sorted(glob.glob(rgb_glob))
+    mask_files = sorted(glob.glob(mask_glob))
+    
+    if not rgb_files:
+        raise ValueError(f"No RGB files found matching pattern: {rgb_glob}")
+    if not mask_files:
+        raise ValueError(f"No mask files found matching pattern: {mask_glob}")
+    
+    print(f"Found {len(rgb_files)} RGB files and {len(mask_files)} mask files")
+    
+    # Pair files by filename
+    pairs = pair_files_by_filename(rgb_files, mask_files, rgb_pattern, mask_pattern)
+    
+    # Unzip pairs
+    rgb_paired = [p[0] for p in pairs]
+    mask_paired = [p[1] for p in pairs]
+    
+    print(f"Successfully paired {len(pairs)} RGB-mask pairs")
+    
+    return rgb_paired, mask_paired
+
+
+def resolve_dataset_path(path: str) -> str:
+    """Resolve dataset paths while tolerating case-only directory mismatches."""
+    if os.path.exists(path):
+        return path
+
+    normalized = os.path.normpath(path)
+    parts = normalized.split(os.sep)
+    if not parts:
+        return path
+
+    candidates = []
+    if parts[0] == "Datasets":
+        candidates.append(os.path.join("datasets", *parts[1:]))
+    elif parts[0] == "datasets":
+        candidates.append(os.path.join("Datasets", *parts[1:]))
+
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+
+    return path
+
+
+class BuildingDataset(Sequence):
+    """Keras Sequence for satellite image building segmentation.
+    
+    This dataset class supports:
+    - Paired RGB and mask loading
+    - Data augmentation via albumentations
+    - Configurable batching and shuffling
+    - Reproducible random seeding
+    
+    Parameters
+    ----------
+    rgb_paths : List[str]
+        List of RGB image file paths
+    mask_paths : List[str]
+        List of mask file paths
+    batch_size : int
+        Batch size for training
+    shuffle : bool
+        Whether to shuffle data each epoch
+    augment_fn : Callable, optional
+        Augmentation function to apply to images and masks
+    deterministic : bool
+        Whether to use deterministic shuffling
+    seed : int, optional
+        Random seed for reproducibility
+    tile_size : int, optional
+        Expected tile size (for validation)
+    """
+    
+    def __init__(
+        self,
+        rgb_paths: List[str],
+        mask_paths: List[str],
+        batch_size: int = 4,
+        shuffle: bool = True,
+        augment_fn: Optional[Callable] = None,
+        deterministic: bool = False,
+        seed: Optional[int] = None,
+        tile_size: Optional[int] = None,
+    ):
+        if len(rgb_paths) != len(mask_paths):
+            raise ValueError(
+                f"RGB and mask lists must have equal length. "
+                f"Got {len(rgb_paths)} RGB and {len(mask_paths)} mask files."
+            )
+        
+        self.rgb_paths = list(rgb_paths)
+        self.mask_paths = list(mask_paths)
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.augment_fn = augment_fn
+        self.deterministic = deterministic
+        self.seed = seed
+        self.tile_size = tile_size
+        
+        self.indices = np.arange(len(self.rgb_paths), dtype=np.int32)
+        self.on_epoch_end()
+        
+        # Validate first few images
+        self._validate_dataset()
+    
+    def _validate_dataset(self):
+        """Validate that dataset files can be loaded and have correct shapes."""
+        if len(self.rgb_paths) == 0:
+            return
+        
+        try:
+            sample_img = load_rgb_image(self.rgb_paths[0], normalize=False)
+            sample_mask = load_mask_image(self.mask_paths[0], normalize=False)
+            
+            if self.tile_size:
+                if sample_img.shape[0] != self.tile_size or sample_img.shape[1] != self.tile_size:
+                    print(f"Warning: Image shape {sample_img.shape[:2]} doesn't match expected tile_size {self.tile_size}")
+            
+            if sample_img.shape[:2] != sample_mask.shape[:2]:
+                print(f"Warning: RGB shape {sample_img.shape[:2]} doesn't match mask shape {sample_mask.shape[:2]}")
+            
+            print(f"Dataset validation passed. Sample shapes: RGB={sample_img.shape}, Mask={sample_mask.shape}")
+            
+        except Exception as e:
+            print(f"Warning: Dataset validation failed: {e}")
+    
+    def __len__(self) -> int:
+        """Number of batches per epoch."""
+        if not self.rgb_paths:
+            return 0
+        return math.ceil(len(self.rgb_paths) / self.batch_size)
+    
+    def __getitem__(self, idx: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Get a batch of data.
+        
+        Parameters
+        ----------
+        idx : int
+            Batch index
+        
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            Tuple of (images_batch, masks_batch)
+        """
+        # Get indices for this batch
+        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+        
+        # Handle case where batch would exceed dataset
+        if len(batch_indices) < self.batch_size:
+            # Pad with random samples from the dataset
+            extra_needed = self.batch_size - len(batch_indices)
+            if self.deterministic and self.seed is not None:
+                rng = np.random.RandomState(self.seed + idx)
+                extra_indices = rng.choice(self.indices, extra_needed, replace=len(self.indices) < extra_needed)
+            else:
+                extra_indices = np.random.choice(self.indices, extra_needed, replace=len(self.indices) < extra_needed)
+            batch_indices = np.concatenate([batch_indices, extra_indices])
+        
+        # Load batch
+        x_batch = []
+        y_batch = []
+        
+        for i in batch_indices:
+            rgb_path = self.rgb_paths[i]
+            mask_path = self.mask_paths[i]
+            
+            try:
+                x = load_rgb_image(rgb_path)
+                y = load_mask_image(mask_path)
+                
+                # Apply augmentation if provided
+                if self.augment_fn is not None:
+                    x, y = self.augment_fn(x, y)
+                
+                x_batch.append(x)
+                y_batch.append(y)
+                
+            except Exception as e:
+                print(f"Error loading {rgb_path} or {mask_path}: {e}")
+                # Use a previously loaded sample as fallback
+                if len(x_batch) > 0:
+                    x_batch.append(x_batch[-1])
+                    y_batch.append(y_batch[-1])
+        if not x_batch:
+            raise RuntimeError(f"Failed to load any samples for batch index {idx}")
+        
+        return np.stack(x_batch, axis=0), np.stack(y_batch, axis=0)
+    
+    def on_epoch_end(self):
+        """Update indices after each epoch."""
+        if self.shuffle:
+            if self.deterministic and self.seed is not None:
+                rng = np.random.RandomState(self.seed)
+                rng.shuffle(self.indices)
+            else:
+                np.random.shuffle(self.indices)
+    
+    def summary(self) -> Dict[str, Any]:
+        """Get dataset summary information.
+        
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary with dataset statistics
+        """
+        return {
+            "samples": len(self.rgb_paths),
+            "batch_size": self.batch_size,
+            "batches_per_epoch": len(self),
+            "steps": len(self),
+            "shuffle": self.shuffle,
+            "deterministic": self.deterministic,
+            "augmentation": self.augment_fn is not None,
+            "seed": self.seed,
+            "tile_size": self.tile_size,
+        }
+    
+    def get_sample(self, idx: int = 0) -> Tuple[np.ndarray, np.ndarray]:
+        """Get a single sample for visualization or debugging.
+        
+        Parameters
+        ----------
+        idx : int
+            Sample index
+        
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            Single image and mask
+        """
+        x = load_rgb_image(self.rgb_paths[idx])
+        y = load_mask_image(self.mask_paths[idx])
+        
+        if self.augment_fn is not None:
+            x, y = self.augment_fn(x, y)
+        
+        return x, y
+
+
+def create_datasets_from_config(
+    config: Dict[str, Any],
+    train_split: float = 0.7,
+    val_split: float = 0.15,
+    test_split: float = 0.15
+) -> Dict[str, BuildingDataset]:
+    """Create train/val/test datasets from configuration.
+    
+    Parameters
+    ----------
+    config : Dict[str, Any]
+        Configuration dictionary containing:
+        - rgb_path: path to RGB images directory
+        - mask_path: path to mask images directory
+        - batch_size: batch size
+        - tile_size: input tile size
+        - augmentations: list of augmentation names
+        - seed: random seed
+        - train_val_test_split: list of [train, val, test] splits
+    train_split : float
+        Fraction for training (default 0.7)
+    val_split : float
+        Fraction for validation (default 0.15)
+    test_split : float
+        Fraction for testing (default 0.15)
+    
+    Returns
+    -------
+    Dict[str, BuildingDataset]
+        Dictionary with 'train', 'val', 'test' datasets
+    
+    Raises
+    ------
+    ValueError
+        If splits don't sum to 1.0 or no files found
+    """
+    # Validate splits
+    total_split = train_split + val_split + test_split
+    if not np.isclose(total_split, 1.0):
+        raise ValueError(f"Train/val/test splits must sum to 1.0, got {total_split}")
+    
+    # Get paths from config
+    rgb_path = resolve_dataset_path(config.get('rgb_path', 'datasets/RGB'))
+    mask_path = resolve_dataset_path(config.get('mask_path', 'datasets/Mask'))
+    
+    # Build glob patterns
+    rgb_glob = os.path.join(rgb_path, "*")
+    mask_glob = os.path.join(mask_path, "*")
+    
+    # Load and pair files
+    rgb_files, mask_files = load_dataset_files(rgb_glob, mask_glob)
+    
+    split_config = config.get('train_val_test_split')
+    if split_config is not None:
+        if len(split_config) != 3:
+            raise ValueError("train_val_test_split must contain exactly three values")
+        train_split, val_split, test_split = [float(v) for v in split_config]
+        total_split = train_split + val_split + test_split
+        if not np.isclose(total_split, 1.0):
+            raise ValueError(f"Train/val/test splits must sum to 1.0, got {total_split}")
+
+    # Shuffle pairs before splitting to avoid lexical/spatial bias.
+    paired_files = list(zip(rgb_files, mask_files))
+    seed = config.get('seed', 42)
+    rng = np.random.RandomState(seed)
+    rng.shuffle(paired_files)
+    rgb_files = [rgb for rgb, _ in paired_files]
+    mask_files = [mask for _, mask in paired_files]
+
+    # Calculate split indices
+    n_total = len(rgb_files)
+    n_train = int(train_split * n_total)
+    n_val = int(val_split * n_total)
+    
+    # Create splits
+    train_rgb = rgb_files[:n_train]
+    train_mask = mask_files[:n_train]
+    
+    val_rgb = rgb_files[n_train:n_train + n_val]
+    val_mask = mask_files[n_train:n_train + n_val]
+    
+    test_rgb = rgb_files[n_train + n_val:]
+    test_mask = mask_files[n_train + n_val:]
+    
+    # Build augmentation pipeline for training
+    augment_fn = None
+    if AUGMENTATION_AVAILABLE:
+        augment_fn = build_augmentation_from_config(config)
+    
+    # Get parameters
+    batch_size = config.get('batch_size', 4)
+    tile_size = config.get('tile_size', 256)
+    seed = config.get('seed', 42)
+    
+    # Create datasets
+    train_ds = BuildingDataset(
+        train_rgb, train_mask,
+        batch_size=batch_size,
+        shuffle=True,
+        augment_fn=augment_fn,
+        deterministic=False,
+        seed=seed,
+        tile_size=tile_size
+    )
+    
+    val_ds = BuildingDataset(
+        val_rgb, val_mask,
+        batch_size=batch_size,
+        shuffle=False,
+        augment_fn=None,  # No augmentation for validation
+        deterministic=True,
+        seed=seed,
+        tile_size=tile_size
+    )
+    
+    test_ds = BuildingDataset(
+        test_rgb, test_mask,
+        batch_size=batch_size,
+        shuffle=False,
+        augment_fn=None,  # No augmentation for test
+        deterministic=True,
+        seed=seed,
+        tile_size=tile_size
+    )
+    
+    print(f"Dataset splits: Train={len(train_rgb)}, Val={len(val_rgb)}, Test={len(test_rgb)}")
+    
+    return {
+        'train': train_ds,
+        'val': val_ds,
+        'test': test_ds
+    }
+
+
+def split_dataset(
+    rgb_files: List[str],
+    mask_files: List[str],
+    train_split: float = 0.7,
+    val_split: float = 0.15,
+    test_split: float = 0.15,
+    seed: Optional[int] = None
+) -> Dict[str, Tuple[List[str], List[str]]]:
+    """Split dataset files into train/val/test sets.
+    
+    Parameters
+    ----------
+    rgb_files : List[str]
+        List of RGB file paths
+    mask_files : List[str]
+        List of mask file paths
+    train_split : float
+        Fraction for training
+    val_split : float
+        Fraction for validation
+    test_split : float
+        Fraction for testing
+    seed : int, optional
+        Random seed for shuffling
+    
+    Returns
+    -------
+    Dict[str, Tuple[List[str], List[str]]]
+        Dictionary with 'train', 'val', 'test' keys containing (rgb, mask) tuples
+    """
+    if len(rgb_files) != len(mask_files):
+        raise ValueError("RGB and mask file lists must have same length")
+    
+    # Validate splits
+    total_split = train_split + val_split + test_split
+    if not np.isclose(total_split, 1.0):
+        raise ValueError(f"Splits must sum to 1.0, got {total_split}")
+    
+    # Shuffle if seed provided
+    if seed is not None:
+        indices = np.arange(len(rgb_files))
+        np.random.seed(seed)
+        np.random.shuffle(indices)
+        rgb_files = [rgb_files[i] for i in indices]
+        mask_files = [mask_files[i] for i in indices]
+    
+    # Calculate split indices
+    n_total = len(rgb_files)
+    n_train = int(train_split * n_total)
+    n_val = int(val_split * n_total)
+    
+    # Create splits
+    train_rgb = rgb_files[:n_train]
+    train_mask = mask_files[:n_train]
+    
+    val_rgb = rgb_files[n_train:n_train + n_val]
+    val_mask = mask_files[n_train:n_train + n_val]
+    
+    test_rgb = rgb_files[n_train + n_val:]
+    test_mask = mask_files[n_train + n_val:]
+    
+    return {
+        'train': (train_rgb, train_mask),
+        'val': (val_rgb, val_mask),
+        'test': (test_rgb, test_mask)
+    }
+
+
+def get_dataset_info(dataset: BuildingDataset) -> Dict[str, Any]:
+    """Get detailed information about a dataset.
+    
+    Parameters
+    ----------
+    dataset : BuildingDataset
+        Dataset to analyze
+    
+    Returns
+    -------
+    Dict[str, Any]
+        Dataset information
+    """
+    info = dataset.summary()
+    
+    # Load a sample to get shape information
+    if len(dataset) > 0:
+        try:
+            x_sample, y_sample = dataset[0]
+            info['image_shape'] = x_sample.shape[1:]
+            info['mask_shape'] = y_sample.shape[1:]
+            info['image_dtype'] = str(x_sample.dtype)
+            info['mask_dtype'] = str(y_sample.dtype)
+            info['pixel_range'] = (float(x_sample.min()), float(x_sample.max()))
+        except Exception as e:
+            info['sample_error'] = str(e)
+    
+    return info
+
+
+==== END FILE ====
+---- FILE: Codes/01/data/integrity.py
+
+"""Dataset integrity helpers."""
+
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
+
+def compute_dataset_hash(rgb_dir: str, mask_dir: str) -> str:
+    """Compute SHA-256 hash from filenames and file sizes.
+
+    This hash excludes file contents by design for performance.
+    """
+    hasher = hashlib.sha256()
+    for directory in sorted([Path(rgb_dir), Path(mask_dir)], key=lambda item: item.as_posix()):
+        if not directory.exists():
+            hasher.update(f"missing:{directory}".encode("utf-8"))
+            continue
+        for file_path in sorted(directory.glob("*")):
+            if not file_path.is_file():
+                continue
+            hasher.update(file_path.name.encode("utf-8"))
+            hasher.update(str(file_path.stat().st_size).encode("utf-8"))
+    return hasher.hexdigest()
+
+
+==== END FILE ====
+
+
+==== END FILE ====
