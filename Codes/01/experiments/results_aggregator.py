@@ -898,6 +898,91 @@ class GridSearchResultsAggregator:
         logger.info(f"Saved summary statistics → {out}")
         return out
 
+    def save_citation_metadata(self, manifest: Dict[str, Any]) -> Tuple[Path, Path]:
+        """Export citation-friendly metadata as JSON and BibTeX."""
+        ts = datetime.utcnow()
+        key = f"mohpo_report_{ts.strftime('%Y%m%d_%H%M%S')}"
+        meta = {
+            "bibtex_key": key,
+            "title": "Multi-Objective Hyperparameter Optimization Report",
+            "author": "Automated MOHPO Framework",
+            "year": ts.year,
+            "month": ts.month,
+            "generated_at": ts.isoformat(),
+            "n_configurations": manifest.get("n_configurations", 0),
+            "n_pareto_points": manifest.get("n_pareto_points", 0),
+            "manifest_path": str(self.out_dir / "report_manifest.json"),
+        }
+        json_out = self.out_dir / "report_citation_metadata.json"
+        json_out.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+        bibtex = (
+            f"@misc{{{key},\n"
+            f"  title={{Multi-Objective Hyperparameter Optimization Report}},\n"
+            f"  author={{Automated MOHPO Framework}},\n"
+            f"  year={{{meta['year']}}},\n"
+            f"  month={{{meta['month']}}},\n"
+            f"  note={{Generated from experiment artifacts at {self.out_dir}}}\n"
+            f"}}\n"
+        )
+        bib_out = self.out_dir / "report_citation.bib"
+        bib_out.write_text(bibtex, encoding="utf-8")
+        return json_out, bib_out
+
+    def save_markdown_academic_report(self, manifest: Dict[str, Any]) -> Path:
+        """Generate a structured academic markdown report from outputs."""
+        pareto_n = int(manifest.get("n_pareto_points", 0))
+        n_cfg = int(manifest.get("n_configurations", 0))
+        top_iou = "N/A"
+        top_bf1 = "N/A"
+        top_comp = "N/A"
+        if "test_iou" in self.df.columns:
+            top_iou = f"{float(self.df['test_iou'].max()):.4f}"
+        if "test_boundary_f1" in self.df.columns:
+            top_bf1 = f"{float(self.df['test_boundary_f1'].max()):.4f}"
+        if "test_compactness" in self.df.columns:
+            top_comp = f"{float(self.df['test_compactness'].min()):.4f}"
+
+        lines = [
+            "# Multi-Objective Hyperparameter Optimization Report",
+            "",
+            "## 1. Abstract",
+            f"This report summarizes a multi-objective hyperparameter search over {n_cfg} completed configurations.",
+            "",
+            "## 2. Experimental Setup",
+            "The search evaluated architecture, encoder depth, loss design, and learning rate settings.",
+            "",
+            "## 3. Hyperparameter Search Space",
+            "Please see the exported full table and ablation table for exact factor combinations.",
+            "",
+            "## 4. Optimization Strategy",
+            "Random/grid candidate generation with constraint filtering and resumable checkpointing.",
+            "",
+            "## 5. Experimental Results",
+            f"Best IoU: {top_iou}",
+            f"Best Boundary F1: {top_bf1}",
+            f"Best (lowest) Compactness: {top_comp}",
+            "",
+            "## 6. Pareto Analysis",
+            f"Number of non-dominated points (3 objectives): {pareto_n}",
+            "Pairwise and 3D Pareto figures were generated for publication.",
+            "",
+            "## 7. Resource and Efficiency Analysis",
+            "See diagnostics and metric distribution figures in the report artifacts.",
+            "",
+            "## 8. Ablation Studies",
+            "Hyperparameter ablation tables are provided in LaTeX format.",
+            "",
+            "## 9. Discussion",
+            "The trade-off landscape suggests objective conflicts that are best interpreted using Pareto-optimal subsets.",
+            "",
+            "## 10. Conclusion",
+            "The framework provides reproducible, publication-ready MOHPO outputs with automated reporting.",
+        ]
+        out = self.out_dir / "academic_report.md"
+        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return out
+
     # ------------------------------------------------------------------ orchestrator
 
     def generate_full_paper_report(self) -> Dict[str, Any]:
@@ -943,6 +1028,15 @@ class GridSearchResultsAggregator:
         stat_file  = self.save_summary_statistics()
         manifest["diagnostics"]["plots"]              = [str(p) for p in diag_plots]
         manifest["diagnostics"]["summary_statistics"] = str(stat_file)
+
+        # ---- Academic report exports ----
+        md_report = self.save_markdown_academic_report(manifest)
+        cite_json, cite_bib = self.save_citation_metadata(manifest)
+        manifest["reports"] = {
+            "academic_markdown": str(md_report),
+            "citation_metadata_json": str(cite_json),
+            "citation_bibtex": str(cite_bib),
+        }
 
         # ---- Write manifest ----
         mf_path = self.out_dir / "report_manifest.json"

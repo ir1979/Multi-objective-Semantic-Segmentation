@@ -1,0 +1,26 @@
+inherits: grid_search.yaml
+
+project:
+  name: "mohpo_nsgaii_scaffold"
+
+grid_search:
+  selection:
+    strategy: nsga2
+    n_points: 36
+    random_seed: 42
+  persistence:
+    backend: sqlite
+    checkpoint_interval: 1
+  objectives:
+    - metric: test_iou
+      direction: max
+    - metric: test_boundary_f1
+      direction: max
+    - metric: test_compactness
+      direction: min
+  nsga2:
+    enabled: true
+    population_size: 36
+    generations: 1
+    crossover_prob: 0.9
+    mutation_prob: 0.1

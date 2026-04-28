@@ -254,6 +254,7 @@ grid_search:
   # ----------------------------------------------------------------------------
   selection:
     # How to pick the points to run:
+    #   "grid_search"     – evaluate the full Cartesian grid as an explicit method
     #   "full"            – run every valid combination (can be thousands)
     #   "random"          – pick n_points at random (fastest to set up)
     #   "latin_hypercube" – space points evenly across the parameter space
@@ -263,11 +264,32 @@ grid_search:
     # Number of grid points (configurations) to actually train.
     # 36 is about 11% of the constrained space — enough to see trends without
     # running for days. Increase for more thorough coverage.
-    n_points: 36
+    n_points: 100
 
     # Seed for the random point selection. Changing this gives a different
     # random subset of configurations.
-    random_seed: 42
+    random_seed: 1405
+
+  # ----------------------------------------------------------------------------
+  # PERSISTENCE BACKEND
+  #   json   : lightweight local experiments
+  #   sqlite : transactional backend for larger/longer production runs
+  # ----------------------------------------------------------------------------
+  persistence:
+    backend: "json"
+    checkpoint_interval: 1
+
+  # ----------------------------------------------------------------------------
+  # OBJECTIVE METADATA
+  # Used by Pareto analysis/reporting to interpret objective directions.
+  # ----------------------------------------------------------------------------
+  objectives:
+    - metric: "test_iou"
+      direction: "max"
+    - metric: "test_boundary_f1"
+      direction: "max"
+    - metric: "test_compactness"
+      direction: "min"
 
 # ==============================================================================
 # SECTION 3 — BASE MODEL CONFIGURATION

@@ -359,6 +359,8 @@ class Trainer:
                     mgda_history=mgda_history,
                 )
                 self._save_history(result)
+                self.tensorboard_logger.close()
+                self.dual_logger.close()
                 return result
 
             self.validation_image_logger.sample_batch = next(iter(val_dataset.take(1)))

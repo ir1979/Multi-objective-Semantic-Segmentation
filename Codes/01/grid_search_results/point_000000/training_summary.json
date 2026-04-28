@@ -1,8 +1,0 @@
-{
-  "best_epoch": 9,
-  "best_metric": 0.17947547137737274,
-  "stopped_early": true,
-  "total_time_seconds": 49.701886892318726,
-  "resumed_from_checkpoint": false,
-  "start_epoch": 0
-}

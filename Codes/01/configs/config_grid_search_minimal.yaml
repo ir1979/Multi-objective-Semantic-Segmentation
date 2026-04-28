@@ -1,0 +1,18 @@
+inherits: grid_search.yaml
+
+project:
+  name: "mohpo_minimal"
+
+grid_search:
+  selection:
+    strategy: grid_search
+  persistence:
+    backend: json
+    checkpoint_interval: 1
+  objectives:
+    - metric: test_iou
+      direction: max
+    - metric: test_boundary_f1
+      direction: max
+    - metric: test_compactness
+      direction: min

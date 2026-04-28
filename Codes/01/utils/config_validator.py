@@ -6,14 +6,47 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(base)
+    for k, v in override.items():
+        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _load_with_inheritance(config_path: str) -> Dict[str, Any]:
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    if not isinstance(cfg, dict):
+        raise ValueError("Config root must be a mapping")
+    parent = cfg.pop("inherits", None)
+    if not parent:
+        return cfg
+    import os
+    parent_path = os.path.join(os.path.dirname(config_path), str(parent))
+    parent_cfg = _load_with_inheritance(parent_path)
+    return _deep_merge(parent_cfg, cfg)
+
 
 class GridSearchConfigValidator:
     """Validate grid search configurations."""
 
     VALID_STRATEGIES = ["single", "weighted", "mgda"]
-    VALID_ARCHITECTURES = ["unet", "unetpp"]
+    VALID_ARCHITECTURES = [
+        "unet",
+        "unetpp",
+        "attunet",
+        "r2attunet",
+        "seunet",
+        "scse_unet",
+        "resunet",
+        "resunetpp",
+    ]
     VALID_PIXEL_LOSSES = ["bce", "bce_iou", "dice", "focal"]
-    VALID_SELECTION_STRATEGIES = ["full", "random", "latin_hypercube"]
+    VALID_SELECTION_STRATEGIES = ["full", "grid_search", "random", "latin_hypercube", "nsga2"]
+    VALID_STATE_BACKENDS = ["json", "sqlite"]
 
     def __init__(self) -> None:
         self.errors: List[str] = []
@@ -47,6 +80,8 @@ class GridSearchConfigValidator:
 
         # Validate training config
         self._validate_training_config(config)
+        self._validate_persistence(config)
+        self._validate_objectives(config)
 
         return len(self.errors) == 0, self.errors, self.warnings
 
@@ -149,12 +184,49 @@ class GridSearchConfigValidator:
         if strategy not in self.VALID_SELECTION_STRATEGIES:
             self.errors.append(f"Invalid selection strategy: {strategy}. Must be one of {self.VALID_SELECTION_STRATEGIES}")
 
-        if strategy in ["random", "latin_hypercube"]:
+        if strategy in ["random", "latin_hypercube", "nsga2"]:
             n_points = selection.get("n_points")
             if n_points is None:
                 self.warnings.append(f"Selection strategy '{strategy}' requires 'n_points' parameter")
             elif not isinstance(n_points, int) or n_points <= 0:
                 self.errors.append(f"Invalid n_points: {n_points}. Must be positive integer")
+
+    def _validate_persistence(self, config: Dict[str, Any]) -> None:
+        """Validate persistence backend and checkpoint settings."""
+        persistence = config.get("grid_search", {}).get("persistence", {})
+        if not persistence:
+            return
+        backend = str(persistence.get("backend", "json")).lower()
+        if backend not in self.VALID_STATE_BACKENDS:
+            self.errors.append(
+                f"Invalid persistence backend: {backend}. Must be one of {self.VALID_STATE_BACKENDS}"
+            )
+        interval = persistence.get("checkpoint_interval", 1)
+        if not isinstance(interval, int) or interval <= 0:
+            self.errors.append(
+                f"Invalid checkpoint_interval: {interval}. Must be a positive integer"
+            )
+
+    def _validate_objectives(self, config: Dict[str, Any]) -> None:
+        """Validate optional objective metadata used by Pareto/reporting modules."""
+        objectives = config.get("grid_search", {}).get("objectives", [])
+        if not objectives:
+            return
+        if not isinstance(objectives, list):
+            self.errors.append("grid_search.objectives must be a list")
+            return
+        for idx, obj in enumerate(objectives):
+            if not isinstance(obj, dict):
+                self.errors.append(f"Objective at index {idx} must be a dictionary")
+                continue
+            metric = obj.get("metric")
+            direction = str(obj.get("direction", "")).lower()
+            if not metric or not isinstance(metric, str):
+                self.errors.append(f"Objective at index {idx} missing string field 'metric'")
+            if direction not in ("max", "min"):
+                self.errors.append(
+                    f"Objective '{metric}' has invalid direction '{direction}'. Use 'max' or 'min'."
+                )
 
     def _validate_training_config(self, config: Dict[str, Any]) -> None:
         """Validate training configuration."""
@@ -203,8 +275,7 @@ class GridSearchConfigValidator:
 def validate_config_file(config_path: str) -> Tuple[bool, List[str], List[str]]:
     """Load and validate a config file."""
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
+        config = _load_with_inheritance(config_path)
     except Exception as exc:
         return False, [f"Failed to load config: {exc}"], []
 

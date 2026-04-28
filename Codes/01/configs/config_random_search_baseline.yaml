@@ -1,0 +1,20 @@
+inherits: grid_search.yaml
+
+project:
+  name: "mohpo_random_baseline"
+
+grid_search:
+  selection:
+    strategy: random
+    n_points: 36
+    random_seed: 42
+  persistence:
+    backend: sqlite
+    checkpoint_interval: 1
+  objectives:
+    - metric: test_iou
+      direction: max
+    - metric: test_boundary_f1
+      direction: max
+    - metric: test_compactness
+      direction: min
