@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import gc
 import json
+import os
+import sqlite3
+import tempfile
 import time
 import traceback
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from itertools import product
@@ -20,9 +24,11 @@ from data.splitter import StratifiedSplitter
 from logging_utils.grid_search_logger import GridSearchLogger
 from logging_utils.logger import DualLogger
 from models.factory import get_model
+from optimization.search_strategy import get_search_strategy
 from training.checkpoint_manager import CheckpointManager
 from training.evaluator import Evaluator
 from training.trainer import Trainer
+from utils.config_loader import load_config
 from utils.error_handling import ErrorHandler, RecoveryStrategy
 
 
@@ -128,33 +134,156 @@ class GridPoint:
         )
 
 
-class GridSearchState:
-    """Persistent JSON-backed state management for resumability."""
+class _StateBackend(ABC):
+    """Backend interface for persistent grid-search state."""
 
-    def __init__(self, state_file: Path) -> None:
+    @abstractmethod
+    def load(self) -> Dict[int, Dict[str, Any]]:
+        pass
+
+    @abstractmethod
+    def save(self, payload: Dict[int, Dict[str, Any]]) -> None:
+        pass
+
+
+class _JsonStateBackend(_StateBackend):
+    """JSON backend with atomic write semantics."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def load(self) -> Dict[int, Dict[str, Any]]:
+        if not self.path.exists():
+            return {}
+        with open(self.path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            raise ValueError(f"Invalid state payload in JSON backend: {self.path}")
+        return {int(k): v for k, v in raw.items()}
+
+    def save(self, payload: Dict[int, Dict[str, Any]]) -> None:
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            prefix=f"{self.path.stem}_",
+            suffix=".tmp",
+            dir=str(self.path.parent),
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp:
+                json.dump({str(k): v for k, v in payload.items()}, tmp, indent=2, default=str)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.replace(tmp_name, str(self.path))
+        finally:
+            if os.path.exists(tmp_name):
+                os.remove(tmp_name)
+
+
+class _SqliteStateBackend(_StateBackend):
+    """SQLite backend for larger experiments and transactional durability."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.path))
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=FULL;")
+        return conn
+
+    def _ensure_schema(self) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS grid_points (
+                    point_id INTEGER PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def load(self) -> Dict[int, Dict[str, Any]]:
+        out: Dict[int, Dict[str, Any]] = {}
+        conn = self._connect()
+        try:
+            rows = conn.execute("SELECT point_id, payload FROM grid_points").fetchall()
+            for pid, payload in rows:
+                out[int(pid)] = json.loads(payload)
+        finally:
+            conn.close()
+        return out
+
+    def save(self, payload: Dict[int, Dict[str, Any]]) -> None:
+        ts = datetime.utcnow().isoformat()
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("DELETE FROM grid_points")
+                conn.executemany(
+                    "INSERT INTO grid_points(point_id, payload, updated_at) VALUES (?, ?, ?)",
+                    [(int(pid), json.dumps(data, default=str), ts) for pid, data in payload.items()],
+                )
+        finally:
+            conn.close()
+
+
+class GridSearchState:
+    """Persistent state management with JSON/SQLite backends."""
+
+    def __init__(
+        self,
+        state_file: Path,
+        backend: str = "json",
+        checkpoint_interval: int = 1,
+    ) -> None:
         self.state_file = Path(state_file)
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.points: Dict[int, GridPoint] = {}
+        self.checkpoint_interval = max(1, int(checkpoint_interval))
+        self._updates_since_save = 0
+        self.backend_name = str(backend).lower()
+        self._backend: _StateBackend = self._build_backend(self.backend_name)
         self._load_or_init()
 
-    def _load_or_init(self) -> None:
-        if self.state_file.exists():
-            with open(self.state_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                self.points = {int(k): GridPoint.from_dict(v) for k, v in data.items()}
+    def _build_backend(self, backend: str) -> _StateBackend:
+        if backend == "json":
+            return _JsonStateBackend(self.state_file)
+        if backend == "sqlite":
+            db_path = self.state_file.with_suffix(".sqlite")
+            return _SqliteStateBackend(db_path)
+        raise ValueError(f"Unsupported state backend '{backend}'. Use 'json' or 'sqlite'.")
 
-    def save(self) -> None:
-        with open(self.state_file, "w", encoding="utf-8") as f:
-            json.dump(
-                {str(k): v.to_dict() for k, v in self.points.items()},
-                f,
-                indent=2,
-                default=str,
-            )
+    def _validate_integrity(self) -> None:
+        for pid, point in self.points.items():
+            if point.point_id != int(pid):
+                raise ValueError(f"State integrity error at key={pid}: point_id mismatch")
+
+    def _load_or_init(self) -> None:
+        data = self._backend.load()
+        self.points = {int(k): GridPoint.from_dict(v) for k, v in data.items()}
+        self._validate_integrity()
+
+    def save(self, force: bool = False) -> None:
+        self._updates_since_save += 1
+        if not force and self._updates_since_save < self.checkpoint_interval:
+            return
+        payload = {int(k): v.to_dict() for k, v in self.points.items()}
+        self._backend.save(payload)
+        self._updates_since_save = 0
 
     def add_point(self, point: GridPoint) -> None:
         self.points[point.point_id] = point
         self.save()
+
+    def flush(self) -> None:
+        self.save(force=True)
 
     def get_point(self, point_id: int) -> Optional[GridPoint]:
         return self.points.get(point_id)
@@ -170,12 +299,12 @@ class GridSearchState:
 
     def summary(self) -> Dict[str, int]:
         return {
-            "total":     len(self.points),
-            "pending":   sum(1 for p in self.points.values() if p.status == "pending"),
-            "running":   sum(1 for p in self.points.values() if p.status == "running"),
+            "total": len(self.points),
+            "pending": sum(1 for p in self.points.values() if p.status == "pending"),
+            "running": sum(1 for p in self.points.values() if p.status == "running"),
             "completed": sum(1 for p in self.points.values() if p.status == "completed"),
-            "failed":    sum(1 for p in self.points.values() if p.status == "failed"),
-            "skipped":   sum(1 for p in self.points.values() if p.status == "skipped"),
+            "failed": sum(1 for p in self.points.values() if p.status == "failed"),
+            "skipped": sum(1 for p in self.points.values() if p.status == "skipped"),
         }
 
 
@@ -221,21 +350,9 @@ class GridSearchConfig:
         return filtered
 
     def _apply_selection(self, points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        strategy = self.selection.get("strategy", "full").lower()
-        if strategy == "full":
-            return points
-        n_points = self.selection.get("n_points", min(50, len(points)))
-        seed = self.selection.get("random_seed", 42)
-        rng = np.random.RandomState(seed)
-        if strategy == "random":
-            indices = rng.choice(len(points), size=min(n_points, len(points)), replace=False)
-            return [points[i] for i in sorted(indices)]
-        if strategy == "latin_hypercube":
-            step = max(1, len(points) // n_points)
-            shuffled = rng.permutation(len(points))
-            indices = shuffled[::step][:n_points]
-            return [points[i] for i in sorted(indices)]
-        return points
+        strategy_name = str(self.selection.get("strategy", "full")).lower()
+        strategy = get_search_strategy(strategy_name)
+        return strategy.select(points, dict(self.selection))
 
 
 # ---------------------------------------------------------------------------
@@ -257,13 +374,20 @@ class GridSearchRunner:
     def __post_init__(self) -> None:
         self.results_root = Path(self.results_dir)
         self.results_root.mkdir(parents=True, exist_ok=True)
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            self.config = yaml.safe_load(f)
+        # Use shared config loader so `inherits` chains are fully resolved.
+        self.config = load_config(self.config_path)
         self.grid_config = GridSearchConfig(self.config)
+        persistence_cfg = dict(self.config.get("grid_search", {}).get("persistence", {}))
+        state_backend = str(persistence_cfg.get("backend", "json")).lower()
+        checkpoint_interval = int(persistence_cfg.get("checkpoint_interval", 1))
         log_file = self.results_root / "grid_search.log"
         if self.logger is None:
             self.logger = DualLogger(log_file, console_level="INFO", file_level="DEBUG")
-        self.state = GridSearchState(self.results_root / "grid_search_state.json")
+        self.state = GridSearchState(
+            self.results_root / "grid_search_state.json",
+            backend=state_backend,
+            checkpoint_interval=checkpoint_interval,
+        )
         self.logger.info(f"Grid Search Runner initialised at {self.results_root}")
 
     def initialize_grid(self, force: bool = False) -> None:
@@ -274,7 +398,7 @@ class GridSearchRunner:
                 i: GridPoint(point_id=i, params=params)
                 for i, params in enumerate(points_data)
             }
-            self.state.save()
+            self.state.flush()
             self.logger.info(f"Generated {len(self.state.points)} grid points")
         else:
             self.logger.info(f"Resuming with {len(self.state.points)} existing points")
@@ -520,6 +644,7 @@ class GridSearchRunner:
             f"\nGrid search finished in {elapsed:.1f}s | "
             f"completed={s['completed']} failed={s['failed']} skipped={s['skipped']}"
         )
+        self.state.flush()
 
     def generate_results_report(self) -> Path:
         """Persist aggregated JSON report."""

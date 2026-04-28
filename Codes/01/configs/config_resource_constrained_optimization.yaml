@@ -1,0 +1,20 @@
+inherits: grid_search.yaml
+
+project:
+  name: "mohpo_resource_constrained"
+
+grid_search:
+  selection:
+    strategy: full
+    random_seed: 123
+  persistence:
+    backend: sqlite
+    checkpoint_interval: 1
+  objectives:
+    - metric: test_iou
+      direction: max
+    - metric: test_boundary_f1
+      direction: max
+    - metric: test_compactness
+      direction: min
+  constraints: []
