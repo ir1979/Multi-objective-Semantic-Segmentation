@@ -101,11 +101,51 @@ grid_search:
     # Random seed for reproducible sampling
     random_seed: 42
 
+# Model Base Configuration (defaults; overridden per-point by grid parameters)
+model:
+  architecture: "unet"
+  encoder_filters: [64, 128, 256, 512, 1024]
+  dropout_rate: 0.3
+  batch_norm: true
+  activation: "relu"
+  output_activation: "sigmoid"
+  deep_supervision: false
+
+# Loss Base Configuration (defaults; overridden per-point by grid parameters)
+loss:
+  strategy: "single"
+  pixel:
+    type: "bce_iou"
+    weight: 1.0
+    bce_iou_alpha: 0.5
+  boundary:
+    enabled: true
+    type: "hausdorff_approx"
+    weight: 0.3
+    distance_threshold: 3
+  shape:
+    enabled: true
+    type: "convexity"
+    weight: 0.1
+  deep_supervision:
+    enabled: false
+    weights: [0.5, 0.3, 0.2, 0.1]
+
+# MGDA Base Configuration
+mgda:
+  enabled: false
+  solver: "frank_wolfe"
+  max_iterations: 50
+  tolerance: 1.0e-6
+  normalize_gradients: true
+  log_alphas: true
+
 # Data Configuration
 data:
   rgb_dir: "datasets/RGB"
   mask_dir: "datasets/Mask"
   image_size: 256
+  batch_size: 4
   train_ratio: 0.70
   val_ratio: 0.15
   test_ratio: 0.15

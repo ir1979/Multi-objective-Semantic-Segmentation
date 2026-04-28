@@ -14,8 +14,14 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import numpy as np
 import yaml
 
+from data.loader import BuildingSegmentationDataset, DatasetConfig
+from data.splitter import StratifiedSplitter
 from logging_utils.grid_search_logger import GridSearchLogger
 from logging_utils.logger import DualLogger
+from models.factory import get_model
+from training.checkpoint_manager import CheckpointManager
+from training.evaluator import Evaluator
+from training.trainer import Trainer
 from utils.error_handling import ErrorHandler, RecoveryStrategy
 
 
@@ -286,6 +292,22 @@ class GridSearchRunner:
                 path = param_mapping[param_name]
                 self._set_nested_config(cfg, path, param_value)
 
+        # Derived flags: disable boundary loss when weight is 0
+        boundary_weight = point.params.get("boundary_loss_weight", cfg.get("loss", {}).get("boundary", {}).get("weight", 0.0))
+        self._set_nested_config(cfg, ("loss", "boundary", "enabled"), float(boundary_weight) > 0.0)
+
+        # Derived flags: disable shape loss when weight is 0
+        shape_weight = point.params.get("shape_loss_weight", cfg.get("loss", {}).get("shape", {}).get("weight", 0.0))
+        self._set_nested_config(cfg, ("loss", "shape", "enabled"), float(shape_weight) > 0.0)
+
+        # Derived flags: enable MGDA when strategy is mgda
+        loss_strategy = point.params.get("loss_strategy", cfg.get("loss", {}).get("strategy", "single"))
+        self._set_nested_config(cfg, ("mgda", "enabled"), str(loss_strategy).lower() == "mgda")
+
+        # Derived flags: sync deep supervision loss with model setting
+        deep_supervision = point.params.get("deep_supervision", cfg.get("model", {}).get("deep_supervision", False))
+        self._set_nested_config(cfg, ("loss", "deep_supervision", "enabled"), bool(deep_supervision))
+
         return cfg
 
     @staticmethod
@@ -323,13 +345,76 @@ class GridSearchRunner:
             with open(config_file, "w", encoding="utf-8") as f:
                 yaml.dump(merged_config, f, default_flow_style=False)
 
-            # TODO: Run the actual training here
-            # This would call the experiment runner or trainer
-            # For now, we'll just simulate it
+            # Build datasets
+            data_cfg = dict(merged_config.get("data", {}))
+            augmentation_cfg = dict(merged_config.get("augmentation", {}))
+            project_cfg = dict(merged_config.get("project", {}))
+            augmentation_cfg["seed"] = int(project_cfg.get("seed", 42))
+
+            loader = BuildingSegmentationDataset(
+                DatasetConfig(
+                    rgb_dir=str(data_cfg["rgb_dir"]),
+                    mask_dir=str(data_cfg["mask_dir"]),
+                    image_size=int(data_cfg.get("image_size", 256)),
+                    batch_size=int(data_cfg.get("batch_size", 4)),
+                    num_workers=int(data_cfg.get("num_workers", 4)),
+                    prefetch_buffer=int(data_cfg.get("prefetch_buffer", 2)),
+                    seed=int(project_cfg.get("seed", 42)),
+                ),
+                skipped_log_path=str(result_dir / "skipped_files.txt"),
+            )
+            loader.validate_pairs()
+
+            splitter = StratifiedSplitter(
+                train_ratio=float(data_cfg.get("train_ratio", 0.7)),
+                val_ratio=float(data_cfg.get("val_ratio", 0.15)),
+                test_ratio=float(data_cfg.get("test_ratio", 0.15)),
+                bins=int(data_cfg.get("building_density_bins", 3)),
+                seed=int(project_cfg.get("seed", 42)),
+            )
+            split = splitter.split(loader.get_density_labels())
+
+            train_ds = loader.get_tf_dataset(split["train"], augment=bool(augmentation_cfg.get("enabled", True)), augmentation_config=augmentation_cfg, shuffle=True)
+            val_ds = loader.get_tf_dataset(split["val"], augment=False, shuffle=False)
+            test_ds = loader.get_tf_dataset(split["test"], augment=False, shuffle=False)
+
+            self.logger.info(
+                f"Point {point.point_id} | Dataset: total={len(loader.pairs)} "
+                f"train={len(split['train'])} val={len(split['val'])} test={len(split['test'])}"
+            )
+
+            # Build model
+            model = get_model(merged_config)
+
+            # Train
+            checkpoint_manager = CheckpointManager(result_dir / "checkpoints")
+            trainer = Trainer(model, merged_config, result_dir, checkpoint_manager)
+            training_result = trainer.fit(train_ds, val_ds)
+
+            self.logger.info(
+                f"Point {point.point_id} | Training done: best_epoch={training_result.best_epoch} "
+                f"best_metric={float(training_result.best_metric):.4f} "
+                f"stopped_early={training_result.stopped_early}"
+            )
+
+            # Evaluate on test set
+            evaluator = Evaluator()
+            test_metrics = evaluator.evaluate(model, test_ds)
+
+            # Collect metrics
+            history = training_result.history
             point.metrics = {
-                "train_loss": float(np.random.random()),
-                "val_iou": float(np.random.random()),
-                "test_iou": float(np.random.random()),
+                "train_loss": float(history.get("train_loss", [0.0])[-1]),
+                "val_iou": float(training_result.best_metric),
+                "test_iou": float(test_metrics.get("iou", 0.0)),
+                "test_dice": float(test_metrics.get("dice", 0.0)),
+                "test_precision": float(test_metrics.get("precision", 0.0)),
+                "test_recall": float(test_metrics.get("recall", 0.0)),
+                "test_boundary_f1": float(test_metrics.get("boundary_f1", 0.0)),
+                "test_compactness": float(test_metrics.get("compactness", 0.0)),
+                "best_epoch": int(training_result.best_epoch),
+                "total_epochs": int(len(history.get("train_loss", []))),
+                "stopped_early": bool(training_result.stopped_early),
             }
 
             self.logger.info(f"Completed Point {point.point_id} | Metrics: {point.metrics}")
