@@ -45,7 +45,7 @@ class TestCheckpointing(unittest.TestCase):
                 mgda_solver=solver,
             )
             self.assertTrue((Path(tmpdir) / "last_epoch.weights.h5").exists())
-            # self.assertTrue((Path(tmpdir) / "last_epoch.h5").exists())
+            self.assertTrue((Path(tmpdir) / "last_epoch.h5").exists())
             self.assertTrue((Path(tmpdir) / "training_state.pkl").exists())
 
             model_path, state = ckpt.load_latest()
