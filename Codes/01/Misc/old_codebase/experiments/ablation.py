@@ -20,8 +20,8 @@ class AblationExperiment:
 
     def run(self, experiment_results: Dict[str, dict]) -> pd.DataFrame:
         baseline = experiment_results.get(self.reference_experiment, {})
-        baseline_iou = baseline.get("test_metrics", {}).get("iou", 0.0)
-        baseline_boundary = baseline.get("test_metrics", {}).get("boundary_iou", 0.0)
+        baseline_iou = baseline.get("test_metrics_iou", 0.0)
+        baseline_boundary = baseline.get("test_metrics_boundary_iou", 0.0)
 
         rows = []
         for name, payload in experiment_results.items():

@@ -249,7 +249,7 @@ class ConfigManager:
     
     def get_experiment_name(self) -> str:
         """Get experiment name from configuration."""
-        return self.config.get('experiment', {}).get('name', 'building_footprint_moo')
+        return self.config.get("experiment_name", 'building_footprint_moo')
     
     def save_results_table(self, results: List[Dict[str, Any]], output_dir: str) -> 'pd.DataFrame':
         """Save results to CSV and return DataFrame.

@@ -1,18 +1,33 @@
 inherits: grid_search.yaml
-
 project:
-  name: "mohpo_minimal"
-
+  name: mohpo_minimal
 grid_search:
+  parameters:
+    model_architecture:
+    - unet
+    encoder_filters:
+    - - 64
+      - 128
+      - 256
+      - 512
+      - 1024
+    pixel_loss_type:
+    - bce
+    boundary_loss_weight:
+    - 0.3
+    shape_loss_weight:
+    - 0.1
+    learning_rate:
+    - 0.0001
+  constraints:
+  - if_boundary_loss_weight: 0.0
+    and_shape_loss_weight: 0.0
+    then_skip: true
   selection:
     strategy: grid_search
-  persistence:
-    backend: json
-    checkpoint_interval: 1
-  objectives:
-    - metric: test_iou
-      direction: max
-    - metric: test_boundary_f1
-      direction: max
-    - metric: test_compactness
-      direction: min
+training:
+  learning_rate: 0.0001
+evaluation:
+  complexity_metrics: []
+visualization:
+  formats: []

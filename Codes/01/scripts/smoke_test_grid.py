@@ -76,7 +76,7 @@ def main() -> None:
     with open(cfg_path, encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
 
-    params = cfg.get("grid_search", {}).get("parameters", {})
+    params = cfg.get("grid_search_parameters", {})
     expected_params = {
         "model_architecture", "encoder_filters",
         "pixel_loss_type", "boundary_loss_weight", "shape_loss_weight", "learning_rate",
@@ -84,11 +84,11 @@ def main() -> None:
     check("exactly 6 grid parameters", set(params.keys()) == expected_params,
           f"found: {set(params.keys())}")
     check("loss.strategy is 'weighted'",
-          cfg.get("loss", {}).get("strategy") == "weighted")
+          cfg.get("loss_strategy") == "weighted")
     check("mgda.enabled is False",
-          cfg.get("mgda", {}).get("enabled") is False)
+          cfg.get("mgda_enabled") is False)
     check("save_predictions flag present",
-          cfg.get("export", {}).get("save_predictions") is not None)
+          cfg.get("export_save_predictions") is not None)
 
     # Generate grid
     gs_cfg_obj = GridSearchConfig(cfg)

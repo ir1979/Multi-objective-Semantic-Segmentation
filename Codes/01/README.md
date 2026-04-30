@@ -72,6 +72,14 @@ python scripts/smoke_test_grid.py
 
 This runs a single 1-epoch configuration and checks all steps end-to-end in a few minutes.
 
+### 6. Launch the config wizard
+
+```bash
+python run_config_wizard.py
+```
+
+The wizard lets you build a single-run or grid-search YAML config, load an existing config, choose a parent config via `inherits`, preview the YAML that will be written, and save either an inherited override file or a fully resolved copy.
+
 ---
 
 ## The 6 Hyperparameters Searched
@@ -80,7 +88,7 @@ This runs a single 1-epoch configuration and checks all steps end-to-end in a fe
 |---|-----------|----------------|
 | 1 | **Architecture** | UNet, UNet++ |
 | 2 | **Encoder depth** | Deep `[64,128,256,512,1024]`, Shallow `[32,64,128,256,512]` |
-| 3 | **Pixel loss** | BCE, BCE+IoU, Dice |
+| 3 | **Pixel loss** | BCE, IoU, Dice |
 | 4 | **Boundary loss weight** | 0.0, 0.3, 0.5 |
 | 5 | **Shape loss weight** | 0.0, 0.1, 0.2 |
 | 6 | **Learning rate** | 1e-4, 5e-4, 1e-3 |

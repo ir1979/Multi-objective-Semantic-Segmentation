@@ -9,23 +9,11 @@ import tensorflow as tf
 
 from losses.boundary_losses import ApproxHausdorffLoss
 from losses.deep_supervision_loss import DeepSupervisionLoss
-from losses.pixel_losses import BCELoss, BCEIoULoss, DiceLoss, FocalLoss, IoULoss
+from losses.pixel_losses import BCELoss, DiceLoss, FocalLoss, IoULoss
 from losses.shape_losses import ConvexityLoss, RegularityLoss
 
 
-def _build_pixel_loss(pixel_config: Mapping[str, object]) -> tf.keras.losses.Loss:
-    loss_type = str(pixel_config.get("type", "bce_iou")).lower()
-    if loss_type == "bce":
-        return BCELoss()
-    if loss_type == "iou":
-        return IoULoss()
-    if loss_type == "dice":
-        return DiceLoss()
-    if loss_type == "bce_iou":
-        return BCEIoULoss(alpha=float(pixel_config.get("bce_iou_alpha", 0.5)))
-    if loss_type == "focal":
-        return FocalLoss()
-    raise ValueError(f"Unknown pixel loss type '{loss_type}'.")
+
 
 
 @dataclass
@@ -35,23 +23,32 @@ class LossManager:
     config: Mapping[str, object]
 
     def __post_init__(self) -> None:
-        loss_cfg = dict(self.config.get("loss", {}))
-        self.strategy = str(loss_cfg.get("strategy", "single")).lower()
-        self.pixel_cfg = dict(loss_cfg.get("pixel", {}))
-        self.pixel_loss = _build_pixel_loss(self.pixel_cfg)
-        self.boundary_enabled = bool(loss_cfg.get("boundary", {}).get("enabled", False))
-        self.shape_enabled = bool(loss_cfg.get("shape", {}).get("enabled", False))
+        self.strategy = str(self.config.get("loss_strategy", "single")).lower()
+        
+        pixel_type = str(self.config.get("loss_pixel_type", "bce"))
+        if pixel_type == "bce":
+            self.pixel_loss = BCELoss()
+        elif pixel_type == "iou":
+            self.pixel_loss = IoULoss()
+        elif pixel_type == "dice":
+            self.pixel_loss = DiceLoss()
+        elif pixel_type == "focal":
+            self.pixel_loss = FocalLoss()
+        else:
+            raise ValueError(f"Unknown pixel loss type '{pixel_type}'.")
+
+        self.boundary_enabled = bool(self.config.get("loss_boundary_enabled", False))
+        self.shape_enabled = bool(self.config.get("loss_shape_enabled", False))
         self.boundary_loss = ApproxHausdorffLoss()
         self.shape_loss = ConvexityLoss()
         self.shape_reg_loss = RegularityLoss()
         self.weights = {
-            "pixel": float(self.pixel_cfg.get("weight", 1.0)),
-            "boundary": float(loss_cfg.get("boundary", {}).get("weight", 0.0)),
-            "shape": float(loss_cfg.get("shape", {}).get("weight", 0.0)),
+            "pixel": float(self.config.get("loss_pixel_weight", 1.0)),
+            "boundary": float(self.config.get("loss_boundary_weight", 0.0)),
+            "shape": float(self.config.get("loss_shape_weight", 0.0)),
         }
-        deep_supervision_cfg = dict(loss_cfg.get("deep_supervision", {}))
-        self.deep_supervision_enabled = bool(deep_supervision_cfg.get("enabled", False))
-        self.deep_supervision_weights = list(deep_supervision_cfg.get("weights", [0.5, 0.3, 0.2, 0.1]))
+        self.deep_supervision_enabled = bool(self.config.get("model_deep_supervision", False))
+        self.deep_supervision_weights = self.config.get("model_deep_supervision_weights", [0.5, 0.3, 0.2, 0.1])
 
     def _apply_loss(
         self,
@@ -119,9 +116,7 @@ class LossManager:
 # Legacy helper expected by existing training code.
 def build_losses(config: Mapping[str, object]) -> tuple[list, list, list]:
     """Return callable loss list, weights, and names (legacy API)."""
-    pixel_type = str(config.get("pixel_loss", "bce_iou")).lower()
-    if pixel_type in {"bce+iou", "bce_iou", "bceiou"}:
-        pixel_type = "bce_iou"
+    pixel_type = str(config.get("pixel_loss", "bce")).lower()
     manager = LossManager(
         {"loss": config}
         if "strategy" in config

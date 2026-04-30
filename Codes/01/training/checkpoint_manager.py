@@ -1,4 +1,4 @@
-"""Checkpoint manager with optimizer and MGDA state persistence."""
+"""Checkpoint manager with optimizer state persistence."""
 
 from __future__ import annotations
 
@@ -9,8 +9,6 @@ from typing import Any, Mapping, Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
-
-from optimization.mgda import MGDASolver
 
 
 @dataclass
@@ -32,7 +30,6 @@ class CheckpointManager:
         optimizer: tf.keras.optimizers.Optimizer,
         epoch: int,
         metrics: Mapping[str, float],
-        mgda_solver: Optional[MGDASolver] = None,
         extra_state: Optional[Mapping[str, Any]] = None,
     ) -> None:
         """Persist model snapshots and training metadata."""
@@ -67,7 +64,6 @@ class CheckpointManager:
             "best_iou": self.best_iou,
             "best_boundary": self.best_boundary,
             "optimizer_weights": self._serialize_optimizer_state(optimizer),
-            "mgda_alpha_history": mgda_solver.get_alpha_history() if mgda_solver else None,
             "metrics": dict(metrics),
         }
         if extra_state:

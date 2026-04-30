@@ -38,7 +38,7 @@ COLORS = {
     "resunetpp":         "#c5b0d5",
     # Pixel-loss colours
     "bce":               "#2ca02c",
-    "bce_iou":           "#ff7f0e",
+    "bce":           "#ff7f0e",
     "dice":              "#9467bd",
     # Encoder-depth colours
     "deep":              "#17becf",

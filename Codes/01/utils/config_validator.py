@@ -33,7 +33,7 @@ def _load_with_inheritance(config_path: str) -> Dict[str, Any]:
 class GridSearchConfigValidator:
     """Validate grid search configurations."""
 
-    VALID_STRATEGIES = ["single", "weighted", "mgda"]
+    VALID_STRATEGIES = ["single", "weighted"]
     VALID_ARCHITECTURES = [
         "unet",
         "unetpp",
@@ -44,7 +44,7 @@ class GridSearchConfigValidator:
         "resunet",
         "resunetpp",
     ]
-    VALID_PIXEL_LOSSES = ["bce", "bce_iou", "dice", "focal"]
+    VALID_PIXEL_LOSSES = ["bce", "bce", "dice", "focal"]
     VALID_SELECTION_STRATEGIES = ["full", "grid_search", "random", "latin_hypercube", "nsga2"]
     VALID_STATE_BACKENDS = ["json", "sqlite"]
 
@@ -193,7 +193,7 @@ class GridSearchConfigValidator:
 
     def _validate_persistence(self, config: Dict[str, Any]) -> None:
         """Validate persistence backend and checkpoint settings."""
-        persistence = config.get("grid_search", {}).get("persistence", {})
+        persistence = config.get("grid_search_persistence", {})
         if not persistence:
             return
         backend = str(persistence.get("backend", "json")).lower()
@@ -209,7 +209,7 @@ class GridSearchConfigValidator:
 
     def _validate_objectives(self, config: Dict[str, Any]) -> None:
         """Validate optional objective metadata used by Pareto/reporting modules."""
-        objectives = config.get("grid_search", {}).get("objectives", [])
+        objectives = config.get("grid_search_objectives", [])
         if not objectives:
             return
         if not isinstance(objectives, list):
@@ -284,7 +284,7 @@ def validate_config_file(config_path: str) -> Tuple[bool, List[str], List[str]]:
 
     if is_valid:
         grid_size = validator.estimate_grid_size(config)
-        selection = config.get("grid_search", {}).get("selection", {})
+        selection = config.get("grid_search_selection", {})
         strategy = selection.get("strategy", "full")
         n_points = selection.get("n_points", grid_size)
 

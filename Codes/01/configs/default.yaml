@@ -35,9 +35,9 @@ model:
 loss:
   strategy: "single"
   pixel:
-    type: "bce_iou"
+    type: "bce"
     weight: 1.0
-    bce_iou_alpha: 0.5
+    bce_alpha: 0.5
   boundary:
     enabled: true
     type: "hausdorff_approx"

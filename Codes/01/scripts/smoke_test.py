@@ -21,8 +21,8 @@ def main() -> None:
     config = load_config(args.config)
     config = dict(config)
     config["training"] = dict(config.get("training", {}))
-    config["training"]["epochs"] = 1
-    set_global_seed(int(config.get("project", {}).get("seed", 42)))
+    config["training_epochs"] = 1
+    set_global_seed(int(config.get("project_seed", 42)))
 
     runner = ExperimentRunner(config, force=True)
     runner.run_single(args.experiment)

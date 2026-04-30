@@ -164,7 +164,7 @@ def _register_builtin_objectives():
     )
     register_objective(
         "param_count",
-        lambda result: _get_nested(result, "param_count", default=result.get("model_info", {}).get("total_params", 0.0)),
+        lambda result: _get_nested(result, "param_count", default=result.get("model_info_total_params", 0.0)),
         direction="min",
         aliases=["params"],
         description="Number of model parameters.",

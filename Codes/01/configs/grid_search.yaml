@@ -141,7 +141,7 @@ grid_search:
       - "bce"      # Binary Cross-Entropy. The standard sigmoid loss.
                    # Fast and stable. Works well when classes are roughly balanced.
 
-      - "bce_iou"  # BCE + IoU Loss (weighted average, alpha=0.5).
+      - "bce"  # BCE + IoU Loss (weighted average, alpha=0.5).
                    # Combines pixel-level accuracy (BCE) with region overlap (IoU).
                    # Often the best choice for segmentation tasks.
 
@@ -341,14 +341,14 @@ loss:
   # ---------- Pixel loss (main term) -----------------------------------------
   pixel:
     # Default type – overridden per grid point.
-    type: "bce_iou"
+    type: "bce"
 
     # Multiplier for the pixel loss in the total loss sum. Keep at 1.0.
     weight: 1.0
 
-    # Only used when type = "bce_iou".
+    # Only used when type = "bce".
     # alpha=0.5 means: total_pixel_loss = 0.5 × BCE + 0.5 × IoU_loss
-    bce_iou_alpha: 0.5
+    bce_alpha: 0.5
 
   # ---------- Boundary loss (edge accuracy term) -----------------------------
   boundary:

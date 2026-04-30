@@ -1,0 +1,82 @@
+# ──────────────────────────────────────────────────────────
+# Experiment Configuration
+#  Generated  :          2026-04-30 09:50
+#  Project    :          grid_search_moo2
+#  Seed       :          1000
+#
+#  Data
+#    Image size  :       256 px
+#    Batch size  :       4
+#    Split       :       train 0.7 / val 0.15 / test 0.15
+#
+#  Model
+#    Architecture:       unet
+#    Filters     :       [64, 128, 256, 512, 1024]
+#
+#  Loss
+#    Strategy    :       single
+#    Pixel loss  :       bce
+#    Boundary    :       off  Shape: off
+#
+#  Training
+#    Epochs      :       50
+#    Learning rate:      0.0001
+#    Scheduler   :       cosine
+#
+#  Grid Search
+#    Dimensions  :       boundary_loss_weight, encoder_filters, learning_rate, model_architecture, pixel_loss_type, shape_loss_weight
+#    Grid points :       0  (before constraints)
+#    Strategy    :       grid_search
+#
+# ──────────────────────────────────────────────────────────
+
+project_name: grid_search_moo2
+model_architecture: unet
+loss_strategy: single
+loss_pixel_type: bce
+loss_boundary_enabled: false
+loss_shape_enabled: false
+data_rgb_dir: datasets/RGB
+data_mask_dir: datasets/Mask
+data_train_ratio: 0.7
+data_val_ratio: 0.15
+data_test_ratio: 0.15
+training_epochs: 50
+training_lr_scheduler_type: cosine
+evaluation_metrics:
+- iou
+- bce
+training_learning_rate: 0.0001
+evaluation_complexity_metrics: []
+visualization_formats:
+- png
+grid_search:
+  enabled: true
+  auto_checkpoint: true
+  replicate_points: 1
+  intermediate_reporting: true
+  selection:
+    strategy: grid_search
+    n_points: 100
+    random_seed: 1405
+  persistence:
+    backend: json
+    checkpoint_interval: 1
+  parameters:
+    model_architecture:
+    - unet
+    - unetpp
+    encoder_filters:
+    - - 64
+      - 128
+      - 256
+      - 512
+      - 1024
+    pixel_loss_type:
+    - iou
+    - bce
+    boundary_loss_weight: []
+    shape_loss_weight: []
+    learning_rate:
+    - 0.0001
+  constraints: []

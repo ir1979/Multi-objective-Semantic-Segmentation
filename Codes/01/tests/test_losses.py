@@ -9,7 +9,7 @@ import tensorflow as tf
 
 from losses.boundary_losses import ApproxHausdorffLoss
 from losses.loss_manager import LossManager
-from losses.pixel_losses import BCELoss, BCEIoULoss, DiceLoss, FocalLoss, IoULoss
+from losses.pixel_losses import BCELoss, DiceLoss, FocalLoss, IoULoss
 from losses.shape_losses import ConvexityLoss, RegularityLoss
 
 
@@ -56,7 +56,7 @@ class TestLosses(unittest.TestCase):
         self.assertLess(float(easy.numpy()), float(hard.numpy()))
 
     def test_all_losses_differentiable(self) -> None:
-        losses = [BCELoss(), IoULoss(), DiceLoss(), BCEIoULoss(), FocalLoss(), ApproxHausdorffLoss(), ConvexityLoss(), RegularityLoss()]
+        losses = [BCELoss(), IoULoss(), DiceLoss(), FocalLoss(), ApproxHausdorffLoss(), ConvexityLoss(), RegularityLoss()]
         pred = tf.Variable(tf.random.uniform((1, 64, 64, 1), minval=0.1, maxval=0.9))
         for loss_fn in losses:
             with tf.GradientTape() as tape:
@@ -66,14 +66,7 @@ class TestLosses(unittest.TestCase):
 
     def test_loss_manager_weighted(self) -> None:
         manager = LossManager(
-            {
-                "loss": {
-                    "strategy": "weighted",
-                    "pixel": {"type": "bce_iou", "weight": 1.0},
-                    "boundary": {"enabled": True, "weight": 0.5},
-                    "shape": {"enabled": True, "weight": 0.25},
-                }
-            }
+            {"loss_strategy": "weighted", "loss_pixel_type": "bce", "loss_pixel_weight": 1.0, "loss_boundary_enabled": True, "loss_boundary_weight": 0.5, "loss_shape_enabled": True, "loss_shape_weight": 0.25}
         )
         losses_dict = manager.compute_losses(self.y_true, self.y_pred_good)
         total = manager.compute_weighted_total(losses_dict)
@@ -81,14 +74,7 @@ class TestLosses(unittest.TestCase):
 
     def test_loss_manager_returns_all(self) -> None:
         manager = LossManager(
-            {
-                "loss": {
-                    "strategy": "mgda",
-                    "pixel": {"type": "bce", "weight": 1.0},
-                    "boundary": {"enabled": True, "weight": 0.2},
-                    "shape": {"enabled": True, "weight": 0.1},
-                }
-            }
+            {"loss_strategy": "single", "loss_pixel_type": "bce", "loss_pixel_weight": 1.0, "loss_boundary_enabled": True, "loss_boundary_weight": 0.2, "loss_shape_enabled": True, "loss_shape_weight": 0.1}
         )
         losses_dict = manager.compute_losses(self.y_true, self.y_pred_good)
         self.assertEqual(set(losses_dict.keys()), {"pixel", "boundary", "shape"})

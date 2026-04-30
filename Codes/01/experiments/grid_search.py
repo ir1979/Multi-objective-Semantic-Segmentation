@@ -321,8 +321,12 @@ class GridSearchConfig:
     def generate_points(self) -> List[Dict[str, Any]]:
         if not self.param_space:
             raise ValueError("No parameters defined in grid search configuration")
-        param_names = sorted(self.param_space.keys())
-        param_values = [self.param_space[name] for name in param_names]
+        # Skip parameters whose value list is empty — they represent disabled dimensions.
+        active_space = {k: v for k, v in self.param_space.items() if v}
+        if not active_space:
+            raise ValueError("No parameters defined in grid search configuration")
+        param_names = sorted(active_space.keys())
+        param_values = [active_space[name] for name in param_names]
         all_combinations = list(product(*param_values))
         points = [dict(zip(param_names, combo)) for combo in all_combinations]
         points = self._apply_constraints(points)
@@ -377,9 +381,10 @@ class GridSearchRunner:
         # Use shared config loader so `inherits` chains are fully resolved.
         self.config = load_config(self.config_path)
         self.grid_config = GridSearchConfig(self.config)
-        persistence_cfg = dict(self.config.get("grid_search", {}).get("persistence", {}))
-        state_backend = str(persistence_cfg.get("backend", "json")).lower()
-        checkpoint_interval = int(persistence_cfg.get("checkpoint_interval", 1))
+        _gs_block = dict(self.config.get("grid_search", {}))
+        persistence_cfg = dict(_gs_block.get("persistence", {}))
+        state_backend = str(persistence_cfg.get("backend") or self.config.get("grid_search_persistence_backend", "json")).lower()
+        checkpoint_interval = int(persistence_cfg.get("checkpoint_interval") or self.config.get("grid_search_persistence_checkpoint_interval", 1))
         log_file = self.results_root / "grid_search.log"
         if self.logger is None:
             self.logger = DualLogger(log_file, console_level="INFO", file_level="DEBUG")
@@ -413,37 +418,30 @@ class GridSearchRunner:
     # ------------------------------------------------------------------
 
     def get_point_config(self, base_config: Dict[str, Any], point: GridPoint) -> Dict[str, Any]:
-        """Merge the 6 grid parameters into a full training config."""
+        """Merge grid point parameters into a full flat training config."""
         cfg = json.loads(json.dumps(base_config))
 
-        # Direct parameter → config-path mapping  (only the 6 search dimensions)
-        param_mapping: Dict[str, Tuple[str, ...]] = {
-            "model_architecture":   ("model", "architecture"),
-            "encoder_filters":      ("model", "encoder_filters"),
-            "pixel_loss_type":      ("loss", "pixel", "type"),
-            "boundary_loss_weight": ("loss", "boundary", "weight"),
-            "shape_loss_weight":    ("loss", "shape", "weight"),
-            "learning_rate":        ("training", "learning_rate"),
+        # Direct parameter → flat config key mapping
+        param_mapping: Dict[str, str] = {
+            "model_architecture":   "model_architecture",
+            "encoder_filters":      "model_encoder_filters",
+            "pixel_loss_type":      "loss_pixel_type",
+            "boundary_loss_weight": "loss_boundary_weight",
+            "shape_loss_weight":    "loss_shape_weight",
+            "learning_rate":        "training_learning_rate",
         }
         for param_name, param_value in point.params.items():
             if param_name in param_mapping:
-                self._set_nested_config(cfg, param_mapping[param_name], param_value)
+                cfg[param_mapping[param_name]] = param_value
 
         # Derived: enable/disable boundary and shape terms based on weight
-        b_weight = float(point.params.get(
-            "boundary_loss_weight",
-            cfg.get("loss", {}).get("boundary", {}).get("weight", 0.0),
-        ))
-        s_weight = float(point.params.get(
-            "shape_loss_weight",
-            cfg.get("loss", {}).get("shape", {}).get("weight", 0.0),
-        ))
-        self._set_nested_config(cfg, ("loss", "boundary", "enabled"), b_weight > 0.0)
-        self._set_nested_config(cfg, ("loss", "shape",    "enabled"), s_weight > 0.0)
-
-        # MGDA always disabled; loss strategy always "weighted"
-        self._set_nested_config(cfg, ("mgda", "enabled"),      False)
-        self._set_nested_config(cfg, ("loss", "strategy"),     "weighted")
+        b_weight = float(point.params.get("boundary_loss_weight",
+                         cfg.get("loss_boundary_weight", 0.0)))
+        s_weight = float(point.params.get("shape_loss_weight",
+                         cfg.get("loss_shape_weight", 0.0)))
+        cfg["loss_boundary_enabled"] = b_weight > 0.0
+        cfg["loss_shape_enabled"]    = s_weight > 0.0
+        cfg["loss_strategy"]         = "weighted"
 
         return cfg
 
@@ -480,34 +478,31 @@ class GridSearchRunner:
                 yaml.dump(merged_config, fh, default_flow_style=False)
 
             # ------ Data ------------------------------------------------
-            data_cfg   = dict(merged_config.get("data", {}))
-            aug_cfg    = dict(merged_config.get("augmentation", {}))
-            proj_cfg   = dict(merged_config.get("project", {}))
-            aug_cfg["seed"] = int(proj_cfg.get("seed", 42))
+            _seed = int(merged_config.get("project_seed", 42))
 
             loader = BuildingSegmentationDataset(
                 DatasetConfig(
-                    rgb_dir=str(data_cfg["rgb_dir"]),
-                    mask_dir=str(data_cfg["mask_dir"]),
-                    image_size=int(data_cfg.get("image_size", 256)),
-                    batch_size=int(data_cfg.get("batch_size", 4)),
-                    num_workers=int(data_cfg.get("num_workers", 4)),
-                    prefetch_buffer=int(data_cfg.get("prefetch_buffer", 2)),
-                    seed=int(proj_cfg.get("seed", 42)),
+                    rgb_dir=str(merged_config["data_rgb_dir"]),
+                    mask_dir=str(merged_config["data_mask_dir"]),
+                    image_size=int(merged_config.get("data_image_size", 256)),
+                    batch_size=int(merged_config.get("data_batch_size", 4)),
+                    num_workers=int(merged_config.get("data_num_workers", 4)),
+                    prefetch_buffer=int(merged_config.get("data_prefetch_buffer", 2)),
+                    seed=_seed,
                 ),
                 skipped_log_path=str(result_dir / "skipped_files.txt"),
             )
             loader.validate_pairs()
 
             splitter = StratifiedSplitter(
-                train_ratio=float(data_cfg.get("train_ratio", 0.7)),
-                val_ratio=float(data_cfg.get("val_ratio", 0.15)),
-                test_ratio=float(data_cfg.get("test_ratio", 0.15)),
-                bins=int(data_cfg.get("building_density_bins", 3)),
-                seed=int(proj_cfg.get("seed", 42)),
+                train_ratio=float(merged_config.get("data_train_ratio", 0.7)),
+                val_ratio=float(merged_config.get("data_val_ratio", 0.15)),
+                test_ratio=float(merged_config.get("data_test_ratio", 0.15)),
+                bins=int(merged_config.get("data_building_density_bins", 3)),
+                seed=_seed,
             )
             split = splitter.split(loader.get_density_labels())
-            train_ds = loader.get_tf_dataset(split["train"], augment=bool(aug_cfg.get("enabled", True)),  augmentation_config=aug_cfg, shuffle=True)
+            train_ds = loader.get_tf_dataset(split["train"], augment=bool(merged_config.get("augmentation_enabled", True)), shuffle=True)
             val_ds   = loader.get_tf_dataset(split["val"],   augment=False, shuffle=False)
             test_ds  = loader.get_tf_dataset(split["test"],  augment=False, shuffle=False)
 
@@ -556,9 +551,8 @@ class GridSearchRunner:
             )
 
             # ------ Save prediction images ------------------------------
-            export_cfg = dict(merged_config.get("export", {}))
-            if export_cfg.get("save_predictions", True):
-                n_samples   = int(export_cfg.get("n_prediction_samples", 8))
+            if merged_config.get("export_save_predictions", True):
+                n_samples   = int(merged_config.get("export_n_prediction_samples", 8))
                 arch        = point.params.get("model_architecture", "?")
                 depth       = "deep" if len(point.params.get("encoder_filters", [])) > 4 and \
                                point.params.get("encoder_filters", [0])[-1] >= 1024 else "shallow"

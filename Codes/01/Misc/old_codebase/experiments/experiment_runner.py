@@ -107,7 +107,7 @@ class ExperimentRunner:
                 batch_size=int(data_cfg.get("batch_size", 8)),
                 num_workers=int(data_cfg.get("num_workers", 4)),
                 prefetch_buffer=int(data_cfg.get("prefetch_buffer", 2)),
-                seed=int(self.config.get("project", {}).get("seed", 42)),
+                seed=int(self.config.get("project_seed", 42)),
             ),
             skipped_log_path=str(run_dir / "skipped_files.txt"),
         )
@@ -117,7 +117,7 @@ class ExperimentRunner:
             val_ratio=float(data_cfg.get("val_ratio", 0.15)),
             test_ratio=float(data_cfg.get("test_ratio", 0.15)),
             bins=int(data_cfg.get("building_density_bins", 3)),
-            seed=int(self.config.get("project", {}).get("seed", 42)),
+            seed=int(self.config.get("project_seed", 42)),
         )
         split = splitter.split(loader.get_density_labels())
         splitter.save_split(
@@ -127,7 +127,7 @@ class ExperimentRunner:
             mask_paths=[str(pair[1]) for pair in loader.pairs],
         )
         augmentation_cfg = dict(self.config.get("augmentation", {}))
-        augmentation_cfg["seed"] = int(self.config.get("project", {}).get("seed", 42))
+        augmentation_cfg["seed"] = int(self.config.get("project_seed", 42))
         train_ds = loader.get_tf_dataset(split["train"], augment=bool(augmentation_cfg.get("enabled", True)), augmentation_config=augmentation_cfg, shuffle=True)
         val_ds = loader.get_tf_dataset(split["val"], augment=False, shuffle=False)
         test_ds = loader.get_tf_dataset(split["test"], augment=False, shuffle=False)
@@ -181,9 +181,9 @@ class ExperimentRunner:
             logger.log_config(
                 {
                     "experiment_name": experiment_name,
-                    "strategy": resolved.get("loss", {}).get("strategy"),
-                    "architecture": resolved.get("model", {}).get("architecture"),
-                    "deep_supervision": resolved.get("model", {}).get("deep_supervision"),
+                    "strategy": resolved.get("loss_strategy"),
+                    "architecture": resolved.get("model_architecture"),
+                    "deep_supervision": resolved.get("model_deep_supervision"),
                     "results_dir": str(run_dir),
                     "resuming": resuming,
                 }

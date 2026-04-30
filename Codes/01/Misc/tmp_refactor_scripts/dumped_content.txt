@@ -1,0 +1,1 @@
+I’m making the first edit in the config layer rather than the GUI layer: a reusable wizard helper, plus a small validator fix so the wizard can generate the architectures the repo already supports. After that I’ll run focused unit tests before building the Tkinter UI.

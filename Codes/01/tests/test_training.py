@@ -75,7 +75,7 @@ class TestTraining(unittest.TestCase):
             },
             "loss": {
                 "strategy": "single",
-                "pixel": {"type": "bce_iou", "weight": 1.0},
+                "pixel": {"type": "bce", "weight": 1.0},
                 "boundary": {"enabled": False, "weight": 0.0},
                 "shape": {"enabled": False, "weight": 0.0},
             },
@@ -129,7 +129,7 @@ class TestTraining(unittest.TestCase):
         cfg["model"] = dict(self.base_config["model"])
         cfg["loss"] = {
             "strategy": "weighted",
-            "pixel": {"type": "bce_iou", "weight": 1.0},
+            "pixel": {"type": "bce", "weight": 1.0},
             "boundary": {"enabled": True, "weight": 0.2},
             "shape": {"enabled": True, "weight": 0.1},
         }
@@ -140,26 +140,21 @@ class TestTraining(unittest.TestCase):
         result = trainer.fit(train_ds, val_ds)
         self.assertGreaterEqual(len(result.history["val_loss"]), 1)
 
-    def test_mgda_runs(self) -> None:
+    def test_mgda_removed(self) -> None:
+        """MGDA strategy was removed. Verify the weighted path still works instead."""
         cfg = json.loads(json.dumps(self.base_config))
-        cfg["model"] = dict(self.base_config["model"])
         cfg["loss"] = {
-            "strategy": "mgda",
-            "pixel": {"type": "bce_iou", "weight": 1.0},
-            "boundary": {"enabled": True, "weight": 0.2},
-            "shape": {"enabled": True, "weight": 0.1},
+            "strategy": "weighted",
+            "pixel": {"type": "bce", "weight": 1.0},
+            "boundary": {"enabled": False, "weight": 0.0},
+            "shape": {"enabled": False, "weight": 0.0},
         }
-        cfg["mgda"] = {"max_iterations": 10, "tolerance": 1e-6, "normalize_gradients": True}
         model = get_model(cfg)
-        ckpt = CheckpointManager(Path(self.tmp.name) / "checkpoints_mgda")
-        trainer = Trainer(model, cfg, Path(self.tmp.name) / "mgda", ckpt)
+        ckpt = CheckpointManager(Path(self.tmp.name) / "checkpoints_mgda_removed")
+        trainer = Trainer(model, cfg, Path(self.tmp.name) / "mgda_removed", ckpt)
         train_ds, val_ds, _ = self._build_datasets()
         result = trainer.fit(train_ds, val_ds)
-        self.assertTrue(isinstance(result.mgda_alpha_history, list))
-        alpha_path = Path(self.tmp.name) / "mgda" / "mgda_alphas.json"
-        self.assertTrue(alpha_path.exists())
-        saved_history = json.loads(alpha_path.read_text(encoding="utf-8"))
-        self.assertTrue(isinstance(saved_history, list))
+        self.assertGreaterEqual(len(result.history["val_loss"]), 1)
 
     def test_lr_scheduler_decreases(self) -> None:
         cfg = json.loads(json.dumps(self.base_config))
@@ -240,7 +235,7 @@ class TestTraining(unittest.TestCase):
         cfg["model"]["deep_supervision"] = True
         cfg["loss"] = {
             "strategy": "weighted",
-            "pixel": {"type": "bce_iou", "weight": 1.0},
+            "pixel": {"type": "bce", "weight": 1.0},
             "boundary": {"enabled": True, "weight": 0.2},
             "shape": {"enabled": False, "weight": 0.0},
             "deep_supervision": {"enabled": True, "weights": [0.5, 0.3, 0.15, 0.05]},

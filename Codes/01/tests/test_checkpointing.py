@@ -8,7 +8,6 @@ from pathlib import Path
 
 import tensorflow as tf
 
-from optimization.mgda import MGDASolver
 from training.checkpoint_manager import CheckpointManager
 
 
@@ -34,15 +33,11 @@ class TestCheckpointing(unittest.TestCase):
             grads = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-            solver = MGDASolver()
-            solver.alpha_history.append([0.5, 0.5])
-
             ckpt.save(
                 model=model,
                 optimizer=optimizer,
                 epoch=3,
                 metrics={"val_iou": 0.7, "val_boundary": 0.2},
-                mgda_solver=solver,
             )
             self.assertTrue((Path(tmpdir) / "last_epoch.weights.h5").exists())
             self.assertTrue((Path(tmpdir) / "last_epoch.h5").exists())
@@ -63,7 +58,6 @@ class TestCheckpointing(unittest.TestCase):
             restored.load_weights(model_path)
             self.assertEqual(len(restored.weights), len(model.weights))
             self.assertTrue(isinstance(state.get("optimizer_weights"), list))
-            self.assertTrue(isinstance(state.get("mgda_alpha_history"), list))
             self.assertAlmostEqual(ckpt.get_best_metric(), 0.7, places=5)
 
             self.assertTrue(ckpt.has_checkpoint())

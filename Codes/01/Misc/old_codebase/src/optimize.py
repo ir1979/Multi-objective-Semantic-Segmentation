@@ -165,7 +165,7 @@ class SegmentationProblem(Problem):
             # Evaluate using real training/validation instead of random placeholders.
             eval_output_dir = None
             if isinstance(self.dataset, dict):
-                eval_output_dir = self.dataset.get('output_dirs', {}).get('optimization')
+                eval_output_dir = self.dataset.get("output_dirs_optimization")
             result = evaluate_experiment_config(config, self.dataset, output_dir=eval_output_dir)
             result['param_count'] = param_count
             result['flops'] = flops

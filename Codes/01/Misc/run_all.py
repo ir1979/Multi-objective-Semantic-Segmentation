@@ -58,11 +58,9 @@ def normalize_log_level(level: str) -> str:
 
 def apply_logging_overrides(config: Dict[str, object], console_level: str, file_level: str) -> Dict[str, object]:
     """Apply CLI logging overrides while keeping file logs verbose."""
-    resolved = json.loads(json.dumps(config))
-    logging_cfg = dict(resolved.get("logging", {}))
-    logging_cfg["console_level"] = normalize_log_level(console_level)
-    logging_cfg["file_level"] = normalize_log_level(file_level)
-    resolved["logging"] = logging_cfg
+    resolved = dict(config)
+    resolved["logging_console_level"] = normalize_log_level(console_level)
+    resolved["logging_file_level"] = normalize_log_level(file_level)
     return resolved
 
 
@@ -247,8 +245,8 @@ def main() -> None:
         sys.exit(2)
 
     config = apply_logging_overrides(config, console_level, file_level)
-    set_global_seed(int(config.get("project", {}).get("seed", 42)))
-    pipeline_logger.log_config({"config_path": args.config, "seed": int(config.get("project", {}).get("seed", 42))})
+    set_global_seed(int(config.get("project_seed", 42)))
+    pipeline_logger.log_config({"config_path": args.config, "seed": int(config.get("project_seed", 42))})
 
     ds_valid, ds_info = validate_dataset(config)
     if not ds_valid:
@@ -292,7 +290,7 @@ def main() -> None:
 
         runner.generate_paper_outputs()
     except Exception as exc:  # pragma: no cover - safety net for production runs
-        error_log = Path(config.get("export", {}).get("results_dir", "results")) / "pipeline_error.log"
+        error_log = Path(config.get("export_results_dir", "results")) / "pipeline_error.log"
         error_log.parent.mkdir(parents=True, exist_ok=True)
         error_log.write_text(traceback.format_exc(), encoding="utf-8")
         print(f"CRITICAL: Pipeline failed with {exc.__class__.__name__}: {exc}")
@@ -302,7 +300,7 @@ def main() -> None:
         sys.exit(4)
 
     elapsed = time.time() - start_time
-    registry = ExperimentRegistry(Path(config.get("export", {}).get("results_dir", "results")) / "experiment_registry.json")
+    registry = ExperimentRegistry(Path(config.get("export_results_dir", "results")) / "experiment_registry.json")
     payload = registry.load()
     completed = [name for name, status in payload.items() if status.get("status") == "completed"]
     failed = [name for name, status in payload.items() if status.get("status") == "failed"]

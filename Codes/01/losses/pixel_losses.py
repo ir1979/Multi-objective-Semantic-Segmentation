@@ -55,19 +55,6 @@ class DiceLoss(tf.keras.losses.Loss):
         return 1.0 - score
 
 
-class BCEIoULoss(tf.keras.losses.Loss):
-    """Weighted blend of BCE and IoU losses."""
-
-    def __init__(self, alpha: float = 0.5, name: str = "bce_iou_loss") -> None:
-        super().__init__(name=name)
-        self.alpha = alpha
-        self.bce = BCELoss()
-        self.iou = IoULoss()
-
-    def call(self, y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-        return self.alpha * self.bce(y_true, y_pred) + (1.0 - self.alpha) * self.iou(y_true, y_pred)
-
-
 class FocalLoss(tf.keras.losses.Loss):
     """Binary focal loss for class-imbalanced segmentation."""
 
